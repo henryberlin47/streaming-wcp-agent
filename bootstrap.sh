@@ -239,6 +239,13 @@ step "Installing the agent ($INSTALL_DIR)"
 if [ -d "$INSTALL_DIR/.git" ]; then
   git -C "$INSTALL_DIR" pull -q && ok "agent repo updated (git pull)" || note_warn "git pull failed in $INSTALL_DIR"
 else
+  if [ -e "$INSTALL_DIR" ]; then
+    # An agent installed by copying files (pre-bootstrap). git clone refuses a
+    # non-empty dir, so move it aside — its .env is regenerated below and nothing
+    # else in it is needed — and clone fresh so future updates are a git pull.
+    OLD="$INSTALL_DIR.old-$(date +%Y%m%d%H%M%S)"
+    mv "$INSTALL_DIR" "$OLD" && note_warn "existing non-git agent moved to $OLD (old .env kept there; delete once the new agent works)"
+  fi
   git clone -q "$AGENT_REPO_URL" "$INSTALL_DIR" && ok "agent cloned" || die "git clone $AGENT_REPO_URL failed"
 fi
 ( cd "$INSTALL_DIR" && npm install --omit=dev --silent >/dev/null 2>&1 ) && ok "npm dependencies installed" || die "npm install failed in $INSTALL_DIR"
