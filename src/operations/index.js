@@ -7,6 +7,7 @@ import { runCdn } from './cdn.js';
 import { runSsl } from './ssl.js';
 import { runPurge } from './purge.js';
 import { runMigrate } from './migrate.js';
+import { runSelfUpdate } from './selfupdate.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
 
 // ============================================================
@@ -268,6 +269,19 @@ const purge = {
 };
 
 // ============================================================
+//  selfupdate — git pull this agent + restart it (no params)
+// ============================================================
+const selfupdate = {
+  name: 'selfupdate',
+  validate() {
+    return { ok: true, errors: [], clean: {} };
+  },
+  async run(job, helpers) {
+    await runSelfUpdate(job, helpers);
+  },
+};
+
+// ============================================================
 //  migrate — move/clone a domain's database to another DB server
 // ============================================================
 const MIGRATE_MODE_RE = /^(dump|import|pipe|all)$/;
@@ -319,7 +333,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate };
 
 export function getOperation(type) {
   return operations[type] || null;

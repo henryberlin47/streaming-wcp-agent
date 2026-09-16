@@ -1,12 +1,28 @@
 import express from 'express';
 import config, { validateConfig } from './config.js';
 import { requireAuth } from './auth.js';
-import { getOperation } from './operations/index.js';
+import { getOperation, operations } from './operations/index.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import { execFileSync } from 'node:child_process';
 import { enqueue, getJob, listJobs, publicView, subscribe, cancelJob } from './jobs.js';
 import { woSiteList } from './lib/sys.js';
 import { siteRoles } from './lib/site.js';
 import { enforceAdminPanelCert } from './lib/panelcert.js';
 import { cloneMap, readMapJson } from './lib/map.js';
+
+// Version string the portal displays: package version + git short sha when
+// this is a checkout (bootstrap installs by `git clone`), so a self-update
+// visibly changes it even when package.json's version doesn't move.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PKG = createRequire(import.meta.url)('../package.json');
+let GIT_SHA = '';
+try {
+  GIT_SHA = execFileSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] })
+    .toString().trim();
+} catch { /* not a git checkout */ }
+export const VERSION = GIT_SHA ? `${PKG.version}+${GIT_SHA}` : PKG.version;
 
 // --- startup validation -----------------------------------------------------
 const problems = validateConfig();
@@ -28,7 +44,7 @@ app.use(express.json({ limit: '64kb' }));
 // --- health (unauthenticated, minimal) --------------------------------------
 // Useful for the panel to see the server is up before auth. Reveals nothing.
 app.get('/healthz', (req, res) => {
-  res.json({ ok: true, server: config.serverName, time: Date.now() });
+  res.json({ ok: true, server: config.serverName, version: VERSION, time: Date.now() });
 });
 
 // Everything below requires auth + passes the IP allowlist.
@@ -38,7 +54,8 @@ app.use(requireAuth);
 app.get('/api/info', (req, res) => {
   res.json({
     server: config.serverName,
-    operations: ['deploy', 'update', 'delete', 'alias', 'cleanup', 'cdn', 'ssl', 'migrate'],
+    version: VERSION,
+    operations: Object.keys(operations), // derived, so new ops can't be forgotten here
     maxConcurrentJobs: config.maxConcurrentJobs,
   });
 });

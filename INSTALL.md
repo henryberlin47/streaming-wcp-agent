@@ -157,7 +157,13 @@ the **AGENT_TOKEN**, ping until green.
 
 # Part 2 — Updating an agent
 
-Because `/opt/streaming-agent` is a clone, updating is:
+**From the portal (recommended):** on the server's card, **Update**. The agent
+git-pulls its own checkout, reinstalls dependencies, then hands its restart to
+systemd on a 5-second delay so the job can report first. It refuses while any
+other job is queued on that server, since the restart would drop it. The card
+shows the new version (`<pkg>+<git sha>`) after the re-ping.
+
+**By hand:** because `/opt/streaming-agent` is a clone, updating is:
 ```bash
 cd /opt/streaming-agent && sudo git pull && sudo npm install --omit=dev && sudo systemctl restart streaming-agent
 ```
