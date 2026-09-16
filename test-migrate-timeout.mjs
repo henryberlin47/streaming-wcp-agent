@@ -2,7 +2,9 @@ import assert from "node:assert";
 import { pipeline } from "node:stream/promises";
 import { Readable, PassThrough } from "node:stream";
 import crypto from "node:crypto";
-const A = "/Users/user/Documents/GitHub/streaming-agent-portal/streaming-agent";
+import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
+const A = dirname(fileURLToPath(import.meta.url));
 
 // 1) per-op timeout: migrate gets its own leash, everyone else the default
 const { default: config } = await import(`${A}/src/config.js`);
