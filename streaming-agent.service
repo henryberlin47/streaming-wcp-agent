@@ -1,0 +1,26 @@
+[Unit]
+Description=Streaming Server Deployment Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root (by design — it invokes root-level deploy/delete scripts).
+User=root
+WorkingDirectory=/opt/streaming-agent
+# Load config from an env file (keep AGENT_TOKEN out of the unit file).
+EnvironmentFile=/opt/streaming-agent/.env
+ExecStart=/usr/bin/node /opt/streaming-agent/src/server.js
+Restart=on-failure
+RestartSec=3
+# Basic hardening (the agent still needs broad access to run deploys, so these
+# are conservative — tighten per your environment).
+NoNewPrivileges=false
+ProtectSystem=false
+# Log to journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=streaming-agent
+
+[Install]
+WantedBy=multi-user.target

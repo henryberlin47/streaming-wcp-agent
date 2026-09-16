@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+
+# Real config holds AGENT_TOKEN and the deploy secrets — never commit it.
+.env
+.env.*
+# ...but the template (empty placeholders) is tracked.
+!.env.example
