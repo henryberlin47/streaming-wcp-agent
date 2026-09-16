@@ -15,7 +15,32 @@ ever exposed to the public internet.
 
 ---
 
-# Part 1 — Fresh VPS
+# Zero-touch (recommended)
+
+You don't have to do Part 1 by hand. In the portal go to **Servers → Provision
+new server**, give it a name, and run the printed one-liner as root on a fresh
+Ubuntu 22.04/24.04 VPS:
+
+```bash
+curl -fsSL https://<portal>/api/bootstrap/<id>/<key> | sudo bash
+```
+
+That URL serves a small wrapper holding this server's config (agent token,
+allowlist, deploy secrets, optional Tailscale auth key) and pipes
+[`bootstrap.sh`](bootstrap.sh) from this repo into bash. It performs every step
+of Part 1 below — WordOps + stack + Redis, a hardened default vhost, tuned
+PHP-FPM, Node LTS, Tailscale, the agent under systemd, the firewall rule, and a
+root deploy key — then **reports its tailnet IP back to the portal**, which fills
+in the server's address and pings it. The only manual step left is adding the
+printed deploy key to GitHub for the private app + map repos.
+
+The key in the URL is one-time and expires in 2 hours; the script is idempotent,
+so a half-finished run can simply be re-run. Part 1 remains the reference for
+what it does and for doing it manually.
+
+---
+
+# Part 1 — Fresh VPS (manual)
 
 **Assumptions:** Ubuntu 22.04 or 24.04, run as **root** (`sudo -i`). WordOps only
 supports these. **Order matters** — WordOps must be first; everything after
