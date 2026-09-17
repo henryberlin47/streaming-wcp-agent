@@ -17,6 +17,9 @@ stub("npm", "exit 0");
 stub("systemd-run", "exit 0");
 process.env.PATH = `${bin}:${process.env.PATH}`;
 process.env.AGENT_JOB_TIMEOUT_MS = "5000";
+// selfupdate prefers the npm beside the real node binary (so it works under
+// systemd/nvm); pin it to the stub so this test never runs a real npm install.
+process.env.AGENT_NPM_BIN = path.join(bin, "npm");
 
 const { enqueue, getJob, STATE } = await import(`${A}/src/jobs.js`);
 const { runSelfUpdate } = await import(`${A}/src/operations/selfupdate.js`);

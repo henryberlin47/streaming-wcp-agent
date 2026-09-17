@@ -246,12 +246,29 @@ if command -v node >/dev/null 2>&1; then
   major="$(node -v | sed -E 's/^v([0-9]+).*/\1/')"
   [ "${major:-0}" -ge 18 ] && { ok "node $(node -v) already present"; need_node=0; }
 fi
+# node being present does NOT mean npm is on PATH. The classic case: /usr/bin/node
+# is a symlink into an nvm install, whose npm sits beside the REAL binary and is
+# only on PATH in interactive shells (where nvm.sh is sourced) — never under
+# `sudo bash` or systemd. Look beside the real binary before giving up.
+if [ $need_node = 0 ] && ! command -v npm >/dev/null 2>&1; then
+  real_bin="$(dirname "$(readlink -f "$(command -v node)")")"
+  if [ -x "$real_bin/npm" ]; then
+    export PATH="$real_bin:$PATH"
+    note_warn "npm was not on PATH; using $real_bin/npm. node here is a symlink (nvm?) — an nvm upgrade can break /usr/bin/node. A NodeSource install is sturdier."
+  else
+    info "node is present but npm is nowhere to be found — installing Node.js LTS from NodeSource"
+    need_node=1
+  fi
+fi
 if [ $need_node = 1 ]; then
   if retry 2 bash -c 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -' && retry 2 apt-get install -y -qq nodejs; then
     ok "node $(node -v) installed"
   else die "Node.js install failed"; fi
 fi
-[ "$(command -v node)" = "/usr/bin/node" ] || note_warn "node is at $(command -v node), but the systemd unit runs /usr/bin/node"
+command -v npm >/dev/null 2>&1 && ok "npm $(npm -v 2>/dev/null)" || die "npm is not on PATH even after installing Node.js"
+# What the systemd unit needs is that /usr/bin/node EXISTS (a symlink is fine) —
+# not that it is first on PATH, which it isn't once the real bin dir is prepended.
+[ -x /usr/bin/node ] || note_warn "/usr/bin/node does not exist, but the systemd unit runs it — symlink your node there or install Node.js from NodeSource"
 
 # ============================================================
 step "Installing git, sed, ufw"

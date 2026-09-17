@@ -43,7 +43,13 @@ export async function runSelfUpdate(job, helpers) {
   else ok(`${before} → ${after}`);
 
   step('npm install --omit=dev');
-  await runOrThrow(helpers, 'npm', ['install', '--omit=dev', '--no-audit', '--no-fund', '--silent'], { cwd: INSTALL_DIR });
+  // Don't assume `npm` is on PATH: under systemd it often isn't (e.g. node is a
+  // symlink into nvm, whose npm is only on PATH in interactive shells). The npm
+  // that belongs to THIS node sits beside the real binary — process.execPath
+  // has symlinks resolved, so this works for nvm and NodeSource alike.
+  const beside = path.join(path.dirname(process.execPath), 'npm');
+  const npm = process.env.AGENT_NPM_BIN || ((await pathExists(beside)) ? beside : 'npm');
+  await runOrThrow(helpers, npm, ['install', '--omit=dev', '--no-audit', '--no-fund'], { cwd: INSTALL_DIR });
   ok('dependencies installed');
 
   step(`Schedule restart of ${SERVICE}`);
