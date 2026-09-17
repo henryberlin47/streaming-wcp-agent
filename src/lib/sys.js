@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fssync from 'node:fs';
+import os from 'node:os';
 
 // ============================================================
 //  sys.js — shared system helpers for native operation logic
@@ -40,7 +41,11 @@ export function run(helpers, command, args = [], opts = {}) {
 
   return new Promise((resolve, reject) => {
     if (verbose) log(`$ ${cmd} ${cmdArgs.join(' ')}`);
-    const child = spawn(cmd, cmdArgs, { cwd, env: { ...process.env, ...env }, shell: false });
+    // GIT_SSH_COMMAND for EVERY child: any git the agent spawns (clone, fetch,
+    // pull, push — now or in ops written later) offers the agent's own key and
+    // can never prompt. One choke point instead of an option at each call site.
+    // Listed first so an operator can still override it via the service env.
+    const child = spawn(cmd, cmdArgs, { cwd, env: { GIT_SSH_COMMAND: GIT_SSH_CMD, ...process.env, ...env }, shell: false });
 
     let stdout = '';
     let stderr = '';
@@ -204,6 +209,40 @@ export async function woSiteList(helpers) {
 }
 
 // --- git --------------------------------------------------------------------
+
+// ssh for git, made safe for a daemon: BatchMode never prompts (a passphrase or
+// unknown-host question would otherwise hang a job with no TTY), and a connect
+// timeout bounds a dead network. Passed as `git -c core.sshCommand=…`.
+// `-i ~/.ssh/id_ed25519` makes the agent ALWAYS offer the key bootstrap generated
+// and the portal displays. Without it, a box whose ~/.ssh/config pins another
+// key with `IdentitiesOnly yes` never presents this one, and GitHub answers
+// "Permission denied" even though the right key was added. -i is additive (any
+// configured identities are still tried) and a missing file is only a warning.
+export const AGENT_SSH_KEY = `${os.homedir()}/.ssh/id_ed25519`;
+export const GIT_SSH_CMD = `ssh -i ${AGENT_SSH_KEY} -o BatchMode=yes -o ConnectTimeout=15`;
+export const GIT_SSH_ARGS = ['-c', `core.sshCommand=${GIT_SSH_CMD}`];
+
+// A git-over-SSH failure as root has a handful of well-known causes, and git's
+// own stderr is what tells them apart. It contains no secrets, so surface it
+// with a concrete next step instead of a generic "check SSH access".
+export function explainGitError(stderr, repo) {
+  const s = String(stderr || '');
+  const last = s.split('\n').map((l) => l.trim()).filter(Boolean).slice(-2).join(' | ') || 'no output from git';
+  const tail = ` [git: ${last}]`;
+  if (/Permission denied \(publickey\)/i.test(s)) {
+    return `GitHub rejected this server's SSH key for ${repo}. Add root's public key (portal → server card → "SSH key", or /root/.ssh/id_ed25519.pub) to a GitHub ACCOUNT that can read the repo — Settings → SSH keys — then retry.${tail}`;
+  }
+  if (/Host key verification failed/i.test(s)) {
+    return `github.com is not in root's known_hosts. On the server run: ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts${tail}`;
+  }
+  if (/Repository not found|does not appear to be a git repository/i.test(s)) {
+    return `The SSH key authenticated, but that GitHub account cannot see ${repo} (no access to it, or the URL is wrong).${tail}`;
+  }
+  if (/Could not resolve hostname|Temporary failure in name resolution|Connection timed out|Network is unreachable|Connection refused/i.test(s)) {
+    return `Network/DNS problem reaching github.com from this server.${tail}`;
+  }
+  return `git could not reach ${repo}.${tail}`;
+}
 
 // Run a git command in a repo (git -C <dir> ...). Returns { code, stdout }.
 export function git(helpers, repoDir, args, opts = {}) {

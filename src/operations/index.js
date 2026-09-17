@@ -8,6 +8,7 @@ import { runSsl } from './ssl.js';
 import { runPurge } from './purge.js';
 import { runMigrate } from './migrate.js';
 import { runSelfUpdate } from './selfupdate.js';
+import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
 
 // ============================================================
@@ -269,6 +270,19 @@ const purge = {
 };
 
 // ============================================================
+//  sshcheck — can root read the private repos on GitHub? (read-only, no params)
+// ============================================================
+const sshcheck = {
+  name: 'sshcheck',
+  validate() {
+    return { ok: true, errors: [], clean: {} };
+  },
+  async run(job, helpers) {
+    await runSshCheck(job, helpers);
+  },
+};
+
+// ============================================================
 //  selfupdate — git pull this agent + restart it (no params)
 // ============================================================
 const selfupdate = {
@@ -333,7 +347,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck };
 
 export function getOperation(type) {
   return operations[type] || null;

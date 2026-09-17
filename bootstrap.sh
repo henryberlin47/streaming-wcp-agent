@@ -391,8 +391,10 @@ else
   echo; for w in "${WARNINGS[@]}"; do printf '     %s%s%s %s\n' "$C_YELLOW" "$G_ARROW" "$C_RESET" "$w"; done
 fi
 echo
-printf '   %sACTION REQUIRED — add this deploy key to GitHub (app repo + seo-domain-map):%s\n' "$C_BOLD" "$C_RESET"
+printf '   %sACTION REQUIRED — add this SSH key to a GitHub ACCOUNT that can read the app repo + seo-domain-map:%s\n' "$C_BOLD" "$C_RESET"
 printf '     %s%s%s\n' "$C_DIM" "${PUBKEY:-<no key>}" "$C_RESET"
-printf '     %s%s Settings: https://github.com/settings/keys — the portal also shows this key.%s\n' "$C_DIM" "$G_ARROW" "$C_RESET"
+printf '     %s%s https://github.com/settings/keys  (an account SSH key — NOT a per-repo deploy key:%s\n' "$C_DIM" "$G_ARROW" "$C_RESET"
+printf '     %s  GitHub allows a deploy key on only ONE repo, and deploys need two.)%s\n' "$C_DIM" "$C_RESET"
+printf '     %s%s The portal shows this key too, and its "Check GitHub" button verifies access.%s\n' "$C_DIM" "$G_ARROW" "$C_RESET"
 printf '     %s%s Verify: ssh -T git@github.com%s\n' "$C_DIM" "$G_ARROW" "$C_RESET"
 echo

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { run, removePath } from './sys.js';
+import { run, removePath, GIT_SSH_ARGS, explainGitError } from './sys.js';
 import { MAP_REPO } from './siteConfig.js';
 
 // ============================================================
@@ -25,13 +25,14 @@ import { MAP_REPO } from './siteConfig.js';
 export async function cloneMap(helpers, { full = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'seomap-'));
   await fs.chmod(dir, 0o700).catch(() => {});
-  const args = ['clone', '--quiet'];
+  const args = [...GIT_SSH_ARGS, 'clone', '--quiet'];
   if (!full) args.push('--depth', '1');
   args.push(MAP_REPO, dir);
   const clone = await run(helpers, 'git', args, { quiet: true });
   if (clone.code !== 0) {
     await removePath(dir);
-    throw new Error('could not clone seo-domain-map (check root SSH access to the repo)');
+    // git's stderr says WHICH of the possible causes this is — never discard it.
+    throw new Error(explainGitError(clone.stderr, 'seo-domain-map'));
   }
   return {
     dir,

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import config from '../config.js';
-import { run, runOrThrow, pathExists } from './sys.js';
+import { run, runOrThrow, pathExists, GIT_SSH_ARGS, explainGitError } from './sys.js';
 import { readEnv } from './envfile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -154,11 +154,17 @@ export async function siteRoles(sites) {
 export async function cloneRepo(helpers, { htdocs, branch, repo, force = false }) {
   const layoutOk = async (dir) => (await pathExists(`${dir}/src`)) && (await pathExists(`${dir}/src/web`));
   const live = await pathExists(`${htdocs}/src/.env`);
+  // Clone with a non-prompting ssh, and on failure say WHY (key not authorised,
+  // unknown host, no access, network) rather than a bare exit code.
+  const gitClone = async (cwd) => {
+    const r = await run(helpers, 'git', [...GIT_SSH_ARGS, 'clone', '-b', branch, repo, '.'], { cwd, quiet: true });
+    if (r.code !== 0) throw new Error(explainGitError(r.stderr, repo));
+  };
 
   if (!live) {
     await fs.mkdir(htdocs, { recursive: true });
     for (const e of await fs.readdir(htdocs)) await fs.rm(`${htdocs}/${e}`, { recursive: true, force: true });
-    await runOrThrow(helpers, 'git', ['clone', '-b', branch, repo, '.'], { cwd: htdocs });
+    await gitClone(htdocs);
     if (!(await layoutOk(htdocs))) throw new Error(`repo layout unexpected: missing ${htdocs}/src or ${htdocs}/src/web`);
     return { backup: null };
   }
@@ -174,7 +180,12 @@ export async function cloneRepo(helpers, { htdocs, branch, repo, force = false }
   const backup = `${htdocs}.bak-${ts}`;
   await fs.rm(fresh, { recursive: true, force: true });
   await fs.mkdir(fresh, { recursive: true });
-  await runOrThrow(helpers, 'git', ['clone', '-b', branch, repo, '.'], { cwd: fresh });
+  try {
+    await gitClone(fresh);
+  } catch (e) {
+    await fs.rm(fresh, { recursive: true, force: true }); // don't leave an empty .new-* dir behind
+    throw e;
+  }
   if (!(await layoutOk(fresh))) {
     await fs.rm(fresh, { recursive: true, force: true });
     throw new Error('repo layout unexpected in the new clone (missing src or src/web) — live site left untouched');
