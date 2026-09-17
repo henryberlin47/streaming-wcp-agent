@@ -60,7 +60,7 @@ banner() {
   done
   printf '%s%s%s%s%s\n' "$accent" "$BOX_BL" "$(_repeat "$BOX_WIDTH" "$BOX_H")" "$BOX_BR" "$C_RESET"
 }
-step()  { STEP_NO=$((STEP_NO + 1)); printf '\n%s%s[%d/%d]%s %s%s%s\n' "$C_BOLD" "$C_BLUE" "$STEP_NO" "$STEP_TOTAL" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"; }
+step()  { STEP_NO=$((STEP_NO + 1)); printf '\n%s%s[%d/%d]%s %s%s%s\n' "$C_BOLD" "$C_BLUE" "$STEP_NO" "$STEP_TOTAL" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"; post_progress "$STEP_NO" "$1"; }
 info()  { printf '   %s%s%s %s\n' "$C_GREY" "$G_DOT" "$C_RESET" "$1"; }
 ok()    { printf '   %s%s%s %s\n' "$C_GREEN" "$G_OK" "$C_RESET" "$1"; }
 warn()  { printf '   %s%s%s %s\n' "$C_YELLOW" "$G_WARN" "$C_RESET" "$1"; }
@@ -91,6 +91,15 @@ post_report() {  # $1 = status
   curl -fsS -m 20 -X POST -H 'Content-Type: application/json' -d "$payload" "$BOOTSTRAP_REPORT_URL" >/dev/null 2>&1
 }
 report_failure() { post_report "failed: $1" || true; }
+
+# Step progress for the portal's dialog. Fire-and-forget in a detached
+# subshell with a short timeout, so a slow or unreachable portal never stalls
+# the install. The portal only ever moves the step forward, so ordering is moot.
+post_progress() {  # $1 = step no, $2 = label
+  [ -n "${BOOTSTRAP_REPORT_URL:-}" ] || return 0
+  local payload="{\"status\":\"progress\",\"step\":$1,\"total\":$STEP_TOTAL,\"label\":\"$(json_str "$2")\"}"
+  ( curl -fsS -m 8 -X POST -H 'Content-Type: application/json' -d "$payload" "$BOOTSTRAP_REPORT_URL" >/dev/null 2>&1 & )
+}
 
 # ============================================================
 #  Preflight
