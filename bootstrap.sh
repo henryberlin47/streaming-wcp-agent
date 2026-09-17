@@ -134,7 +134,14 @@ post_progress() {  # $1 = step no, $2 = label
 #  Preflight
 # ============================================================
 clear 2>/dev/null || true
+# Fingerprint of the exact script content that is running. GitHub's raw CDN
+# caches for minutes per edge, so after a push a VPS can still be handed the
+# previous version — this makes "which version actually ran?" visible at a
+# glance. Compare with: sha256sum bootstrap.sh | cut -c1-12
+SCRIPT_ID="unknown (piped)"
+if [ -f "$0" ]; then SCRIPT_ID="$( (sha256sum "$0" 2>/dev/null || shasum -a 256 "$0" 2>/dev/null) | cut -c1-12)"; fi
 banner "$C_CYAN" "Streaming WCP — server bootstrap" \
+  "Script  : $SCRIPT_ID" \
   "Server  : ${AGENT_SERVER_NAME:-?}" \
   "Agent   : $INSTALL_DIR  (port $AGENT_PORT)" \
   "Stacks  : WordOps + Redis + Node + Tailscale"
