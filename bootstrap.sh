@@ -65,13 +65,42 @@ info()  { printf '   %s%s%s %s\n' "$C_GREY" "$G_DOT" "$C_RESET" "$1"; }
 ok()    { printf '   %s%s%s %s\n' "$C_GREEN" "$G_OK" "$C_RESET" "$1"; }
 warn()  { printf '   %s%s%s %s\n' "$C_YELLOW" "$G_WARN" "$C_RESET" "$1"; }
 err()   { printf '   %s%s%s %s\n' "$C_RED" "$G_ERR" "$C_RESET" "$1" >&2; }
-die()   { err "$1"; report_failure "$1"; exit "${2:-1}"; }
+die()   { err "$1"; report_failure "$1${LAST_FAIL:+ — $LAST_FAIL}"; exit "${2:-1}"; }
 
 WARNINGS=()
 note_warn() { warn "$1"; WARNINGS+=("$1"); }
 
 # JSON string escape for the report payload (values are single-line).
 json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\n\r'; }
+
+# Quiet on success, loud on failure. Runs a command with its output captured;
+# if it fails, prints the command and the last lines so the CAUSE is visible
+# instead of a bare "X failed" (and the portal gets the tail too, via die()).
+# stdin is closed so nothing can sit waiting on a prompt. Never pass a secret
+# as an argument to try(): the command line is echoed on failure.
+LAST_LOG="$(mktemp)"; LAST_FAIL=""
+trap 'rm -f "$LAST_LOG"' EXIT
+try() {
+  "$@" >"$LAST_LOG" 2>&1 </dev/null; local rc=$?
+  if [ $rc -ne 0 ]; then
+    LAST_FAIL="$(tail -n 3 "$LAST_LOG" | tr '\n' ' ' | cut -c1-280)"
+    printf '     %s$ %s   (exit %d)%s\n' "$C_DIM" "$*" "$rc" "$C_RESET" >&2
+    tail -n 15 "$LAST_LOG" | sed 's/^/       /' >&2
+  else
+    LAST_FAIL=""
+  fi
+  return $rc
+}
+# Network steps get a few attempts: DNS can be dead for seconds right after
+# `tailscale up` swaps resolv.conf to MagicDNS, and package mirrors hiccup.
+retry() {  # retry <attempts> cmd…
+  local n=$1 i; shift
+  for ((i = 1; i <= n; i++)); do
+    try "$@" && return 0
+    [ "$i" -lt "$n" ] && { info "attempt $i/$n failed — retrying in 5s"; sleep 5; }
+  done
+  return 1
+}
 
 # ============================================================
 #  Report back to the portal
@@ -150,8 +179,8 @@ command -v wo >/dev/null 2>&1 || export PATH="$PATH:/usr/local/bin"
 
 # ============================================================
 step "Installing WordOps stack + Redis"
-if wo stack install >/dev/null 2>&1; then ok "base stack installed"; else note_warn "wo stack install returned non-zero (may already be installed)"; fi
-if wo stack install --redis >/dev/null 2>&1; then ok "Redis stack installed"; else note_warn "wo stack install --redis returned non-zero (may already be installed)"; fi
+if try wo stack install; then ok "base stack installed"; else note_warn "wo stack install returned non-zero (may already be installed)"; fi
+if try wo stack install --redis; then ok "Redis stack installed"; else note_warn "wo stack install --redis returned non-zero (may already be installed)"; fi
 systemctl is-active --quiet redis-server && ok "redis-server active" || note_warn "redis-server is not active"
 
 # ============================================================
@@ -218,7 +247,7 @@ if command -v node >/dev/null 2>&1; then
   [ "${major:-0}" -ge 18 ] && { ok "node $(node -v) already present"; need_node=0; }
 fi
 if [ $need_node = 1 ]; then
-  if curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - >/dev/null 2>&1 && apt-get install -y -qq nodejs >/dev/null; then
+  if retry 2 bash -c 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -' && retry 2 apt-get install -y -qq nodejs; then
     ok "node $(node -v) installed"
   else die "Node.js install failed"; fi
 fi
@@ -226,27 +255,33 @@ fi
 
 # ============================================================
 step "Installing git, sed, ufw"
-apt-get install -y -qq git sed ufw >/dev/null 2>&1 && ok "git, sed, ufw present" || note_warn "apt-get install git sed ufw returned non-zero"
+retry 2 apt-get install -y -qq git sed ufw && ok "git, sed, ufw present" || note_warn "apt-get install git sed ufw returned non-zero"
 
 # ============================================================
 step "Joining the Tailscale tailnet"
 if ! command -v tailscale >/dev/null 2>&1; then
-  curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1 && ok "tailscale installed" || die "Tailscale install failed"
+  retry 2 bash -c 'curl -fsSL https://tailscale.com/install.sh | sh' && ok "tailscale installed" || die "Tailscale install failed"
 else ok "tailscale already installed"; fi
 if [ -n "${TS_AUTHKEY:-}" ]; then
   tailscale up --auth-key="$TS_AUTHKEY" --hostname="$(echo "$AGENT_SERVER_NAME" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | tr -cd 'a-z0-9-')" >/dev/null 2>&1 \
     && ok "joined tailnet with auth key" || note_warn "tailscale up with the auth key returned non-zero"
+  # (deliberately NOT via try(): it would echo the auth key on failure)
 else
   warn "No TS_AUTHKEY — tailscale will print a login URL and WAIT until you approve it."
   tailscale up || note_warn "tailscale up returned non-zero"
 fi
 TS_IP="$(tailscale ip -4 2>/dev/null | head -n1)"
 [ -n "$TS_IP" ] && ok "tailnet IP: $TS_IP" || die "no Tailscale IPv4 — the portal cannot reach this server"
+# Joining swaps /etc/resolv.conf to MagicDNS, and resolution can be dead for a
+# few seconds. Wait for it to settle so the git/npm fetches that follow don't
+# hit a resolver that isn't answering yet.
+for _ in 1 2 3 4 5 6 7 8 9 10; do getent hosts registry.npmjs.org >/dev/null 2>&1 && break; sleep 2; done
+getent hosts registry.npmjs.org >/dev/null 2>&1 && ok "DNS settled" || note_warn "registry.npmjs.org is not resolving after joining the tailnet"
 
 # ============================================================
 step "Installing the agent ($INSTALL_DIR)"
 if [ -d "$INSTALL_DIR/.git" ]; then
-  git -C "$INSTALL_DIR" pull -q && ok "agent repo updated (git pull)" || note_warn "git pull failed in $INSTALL_DIR"
+  retry 3 git -C "$INSTALL_DIR" pull -q && ok "agent repo updated (git pull)" || note_warn "git pull failed in $INSTALL_DIR"
 else
   if [ -e "$INSTALL_DIR" ]; then
     # An agent installed by copying files (pre-bootstrap). git clone refuses a
@@ -255,9 +290,13 @@ else
     OLD="$INSTALL_DIR.old-$(date +%Y%m%d%H%M%S)"
     mv "$INSTALL_DIR" "$OLD" && note_warn "existing non-git agent moved to $OLD (old .env kept there; delete once the new agent works)"
   fi
-  git clone -q "$AGENT_REPO_URL" "$INSTALL_DIR" && ok "agent cloned" || die "git clone $AGENT_REPO_URL failed"
+  retry 3 git clone -q "$AGENT_REPO_URL" "$INSTALL_DIR" && ok "agent cloned" || die "git clone $AGENT_REPO_URL failed"
 fi
-( cd "$INSTALL_DIR" && npm install --omit=dev --silent >/dev/null 2>&1 ) && ok "npm dependencies installed" || die "npm install failed in $INSTALL_DIR"
+# No --silent and no /dev/null: try() captures the output and shows it if npm
+# fails, which is the only way to learn WHY. Retried because this is the first
+# registry fetch after the tailnet join.
+export HOME="${HOME:-/root}"
+retry 3 npm --prefix "$INSTALL_DIR" install --omit=dev --no-audit --no-fund && ok "npm dependencies installed" || die "npm install failed in $INSTALL_DIR"
 AGENT_VERSION="$(node -p "require('$INSTALL_DIR/package.json').version" 2>/dev/null || echo unknown)"
 
 # ============================================================
