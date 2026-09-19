@@ -48,7 +48,10 @@ fi
 
 BOX_WIDTH=60
 STEP_NO=0
-STEP_TOTAL=12
+# Count the step() calls in this very file, so adding a step can never again
+# leave the total behind ("[13/12]", and a progress bar past 100% in the portal).
+STEP_TOTAL=13
+if [ -f "$0" ]; then _n="$(grep -cE '^step "' "$0" 2>/dev/null || true)"; [ "${_n:-0}" -gt 0 ] 2>/dev/null && STEP_TOTAL="$_n"; fi
 
 _repeat() { local n=$1 ch=$2 out=''; while ((n-- > 0)); do out+="$ch"; done; printf '%s' "$out"; }
 banner() {
@@ -105,6 +108,20 @@ retry() {  # retry <attempts> cmd…
 # ============================================================
 #  Report back to the portal
 # ============================================================
+# WordOps refuses to START without a git identity. On first run it asks for a
+# name + email on stdin; this script runs with stdin closed (so nothing can hang),
+# so that prompt gets EOF and EVERY `wo` command dies with EOFError — nothing is
+# installed at all. WordOps reads ~/.gitconfig [user], so seed it before wo ever
+# runs. An existing identity is left alone. It is only used for WordOps' local
+# commits of /etc config ("stored locally only", per its own prompt).
+ensure_git_identity() {
+  local n e
+  n="$(git config --global user.name 2>/dev/null || true)"
+  e="$(git config --global user.email 2>/dev/null || true)"
+  [ -n "$n" ] || git config --global user.name "${WO_GIT_NAME:-${AGENT_SERVER_NAME:-wordops}}"
+  [ -n "$e" ] || git config --global user.email "${WO_GIT_EMAIL:-root@$(hostname -f 2>/dev/null || hostname)}"
+}
+
 AGENT_PORT="${AGENT_PORT:-8787}"
 INSTALL_DIR="/opt/streaming-agent"
 TS_IP=""; PUBKEY=""; AGENT_VERSION=""
@@ -149,6 +166,10 @@ banner "$C_CYAN" "Streaming WCP — server bootstrap" \
 step "Preflight checks"
 [[ $EUID -eq 0 ]] || { err "Run as root (the one-liner uses sudo bash)."; exit 1; }
 ok "running as root"
+# Everything below (git identity, SSH key, npm cache) must land in ROOT's home:
+# the agent runs under systemd with HOME=/root, and some sudo setups keep the
+# invoking user's HOME, which would put root's config in the wrong place.
+export HOME=/root
 if [ -r /etc/os-release ]; then
   . /etc/os-release
   case "${ID:-}-${VERSION_ID:-}" in
@@ -167,7 +188,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 ok "all required config present"
-for c in curl wget; do
+for c in curl wget git; do
   command -v "$c" >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq "$c" >/dev/null; }
   command -v "$c" >/dev/null 2>&1 && ok "$c present" || die "cannot install $c"
 done
@@ -175,19 +196,37 @@ export DEBIAN_FRONTEND=noninteractive
 
 # ============================================================
 step "Installing WordOps"
+# BEFORE the installer, and also on a box where wo already exists: this is what
+# repairs a server whose WordOps was installed but could never start.
+ensure_git_identity
+ok "git identity: $(git config --global user.name) <$(git config --global user.email)>"
 if command -v wo >/dev/null 2>&1; then
-  ok "WordOps already installed ($(wo --version 2>/dev/null | head -n1 || echo present)) — skipping"
+  ok "WordOps already installed — skipping the installer"
 else
   info "Downloading installer (wops.cc)…"
   if wget -qO /tmp/wo-install wops.cc && bash /tmp/wo-install; then ok "WordOps installed"; else rm -f /tmp/wo-install; die "WordOps install failed"; fi
   rm -f /tmp/wo-install
 fi
 command -v wo >/dev/null 2>&1 || export PATH="$PATH:/usr/local/bin"
+# "Installed" is not enough — it has to actually run. This is the check that
+# would have caught the EOFError crash instead of sailing on to "Ready".
+try wo --version && ok "wo runs ($(wo --version 2>/dev/null | head -n1))" || die "WordOps is installed but cannot start"
 
 # ============================================================
 step "Installing WordOps stack + Redis"
-if try wo stack install; then ok "base stack installed"; else note_warn "wo stack install returned non-zero (may already be installed)"; fi
-if try wo stack install --redis; then ok "Redis stack installed"; else note_warn "wo stack install --redis returned non-zero (may already be installed)"; fi
+if try wo stack install; then ok "base stack installed"; else note_warn "wo stack install returned non-zero"; fi
+if try wo stack install --redis; then ok "Redis stack installed"; else note_warn "wo stack install --redis returned non-zero"; fi
+# Judge by what is actually ON the box, not by exit codes. Without nginx, PHP-FPM
+# and MariaDB no site can ever be deployed here, so that is fatal — never "Ready
+# with warnings". (Redis stays a warning: sites work without an object cache.)
+missing_stack=()
+command -v nginx >/dev/null 2>&1 || missing_stack+=("nginx")
+ls /etc/php/*/fpm/php.ini >/dev/null 2>&1 || missing_stack+=("php-fpm")
+{ command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; } || missing_stack+=("mariadb")
+if [ "${#missing_stack[@]}" -gt 0 ]; then
+  die "WordOps stack is incomplete — missing: ${missing_stack[*]}. No site can be deployed on this server."
+fi
+ok "stack verified: nginx, php-fpm, mariadb"
 systemctl is-active --quiet redis-server && ok "redis-server active" || note_warn "redis-server is not active"
 
 # ============================================================
