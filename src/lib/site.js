@@ -129,6 +129,16 @@ const TUNE_PHP = path.join(__dirname, '..', '..', 'scripts', 'tune-php.sh');
 //   - idempotent: "already tuned" costs a few greps and logs nothing
 //   - no extra restart: it rides the restart the operation was doing anyway
 //   - never throws: a tuning problem is reported, and the restart still happens
+// The portal's "Tune PHP" button: fix a server NOW instead of waiting for its
+// next deploy. Here the script does its own restart — only of the PHP versions
+// it actually changed, so an already-tuned server is not touched at all.
+export async function tunePhpNow(helpers, { info, ok }) {
+  const r = await run(helpers, 'bash', [TUNE_PHP], { quiet: true });
+  const lines = `${r.stdout}\n${r.stderr}`.split('\n').map((s) => s.trim()).filter(Boolean);
+  for (const l of lines) (r.code === 0 ? ok : info)(l);
+  if (r.code !== 0) throw new Error(lines.pop() || `tune-php.sh exited ${r.code}`);
+}
+
 export async function tuneAndRestartPhp(helpers, { info, warn }, service = 'php8.3-fpm') {
   const r = await run(helpers, 'bash', [TUNE_PHP, '--no-restart'], { quiet: true });
   const lines = `${r.stdout}\n${r.stderr}`.split('\n').map((s) => s.trim()).filter(Boolean);

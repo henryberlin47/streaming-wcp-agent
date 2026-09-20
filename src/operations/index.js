@@ -10,6 +10,8 @@ import { runMigrate } from './migrate.js';
 import { runSelfUpdate } from './selfupdate.js';
 import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
+import { tunePhpNow } from '../lib/site.js';
+import { logger } from '../lib/log.js';
 
 // ============================================================
 //  Operation registry
@@ -283,6 +285,21 @@ const sshcheck = {
 };
 
 // ============================================================
+//  tunephp — apply scripts/tune-php.sh to every PHP version now (no params)
+// ============================================================
+const tunephp = {
+  name: 'tunephp',
+  validate() {
+    return { ok: true, errors: [], clean: {} };
+  },
+  async run(job, helpers) {
+    const { step, info, ok } = logger(helpers);
+    step('Tune PHP-FPM (every installed version)');
+    await tunePhpNow(helpers, { info, ok });
+  },
+};
+
+// ============================================================
 //  selfupdate — git pull this agent + restart it (no params)
 // ============================================================
 const selfupdate = {
@@ -347,7 +364,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp };
 
 export function getOperation(type) {
   return operations[type] || null;

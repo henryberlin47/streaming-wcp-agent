@@ -44,5 +44,19 @@ assert.equal(l.m.warn.length, 1); assert.match(l.m.warn[0], /PHP tuning check: n
 assert.equal(restarts().length, 3);
 console.log("3. tuning problem -> warned, restart still runs");
 
+// 4) the portal's "Tune PHP" op: the script restarts ONLY what it changed, and a failure throws
+process.env.PHP_ETC = etc;
+fs.writeFileSync(INI, "[PHP]\nmemory_limit = 128M\n");
+const { tunePhpNow } = await import(path.join(A, "src/lib/site.js"));
+const oks = []; const lg = { ok: (s) => oks.push(s), info() {} };
+await tunePhpNow(helpers, lg);
+assert.match(oks.join("\n"), /php 8\.3: tuned \(\d+ setting\(s\) changed\), restarted/);
+assert.equal(restarts().length, 4);
+await tunePhpNow(helpers, lg);                       // already tuned -> no restart at all
+assert.equal(restarts().length, 4);
+process.env.PHP_ETC = path.join(base, "nope");
+await assert.rejects(() => tunePhpNow(helpers, lg), /no PHP-FPM found/);
+console.log("4. tunephp op: restarts only changed versions, already-tuned is a no-op, failure fails the job");
+
 console.log("\nPASS: deploy/alias/update tune PHP before their existing restart, safely");
 fs.rmSync(base, { recursive: true, force: true });
