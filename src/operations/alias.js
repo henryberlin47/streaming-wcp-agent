@@ -4,7 +4,7 @@ import { runOrThrow, pathExists, woSiteExists, clearWpCaches, systemctl, nginxTe
 import { injectEnv, readEnv, setEnv, setWpSiteUrl } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeAliasCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp,
 } from '../lib/site.js';
 import { brandAdd, cdnAdd } from '../lib/api.js';
 import { APP_REPO_DEFAULT, BRANCH_DEFAULT } from '../lib/siteConfig.js';
@@ -107,7 +107,7 @@ export async function runAlias(job, helpers, p, opts = {}) {
   } else {
     throw new Error('nginx -t failed after writing alias config');
   }
-  await systemctl(helpers, 'restart', 'php8.3-fpm');
+  await tuneAndRestartPhp(helpers, { info, warn }); // tunes PHP if needed, then the usual restart
   await systemctl(helpers, 'restart', 'cron');
 
   // 10) Clear BOTH alias and main caches (shared DB).

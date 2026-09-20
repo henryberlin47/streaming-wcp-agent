@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import config from '../config.js';
-import { run, runOrThrow, pathExists, GIT_SSH_ARGS, explainGitError } from './sys.js';
+import { run, runOrThrow, pathExists, systemctl, GIT_SSH_ARGS, explainGitError } from './sys.js';
 import { readEnv } from './envfile.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -118,6 +118,28 @@ export async function finalizeCronPerms(helpers, cronFile) {
 //   main  .env -> SITE_MOBILE_HOST=<alias domain> => 'pc', but only while that
 //                 alias is still a live site (deleting the alias leaves the key
 //                 behind in the main .env — don't show a stale PC tag for it).
+const TUNE_PHP = path.join(__dirname, '..', '..', 'scripts', 'tune-php.sh');
+
+// Make sure the PHP that serves the sites is tuned, THEN restart it. Every
+// operation that restarts PHP goes through here, so a server heals itself on
+// its next deploy/alias/update — including ones that were never bootstrapped,
+// and ones where PHP 8.3 was installed after any one-off tuning ran. (An
+// untuned 8.3 — memory 128M, default regex limits — made WP Rocket die on a
+// large homepage and serve HTTP 200 with an empty body.)
+//   - idempotent: "already tuned" costs a few greps and logs nothing
+//   - no extra restart: it rides the restart the operation was doing anyway
+//   - never throws: a tuning problem is reported, and the restart still happens
+export async function tuneAndRestartPhp(helpers, { info, warn }, service = 'php8.3-fpm') {
+  const r = await run(helpers, 'bash', [TUNE_PHP, '--no-restart'], { quiet: true });
+  const lines = `${r.stdout}\n${r.stderr}`.split('\n').map((s) => s.trim()).filter(Boolean);
+  if (r.code === 0) {
+    for (const l of lines.filter((l) => /tuned \(/.test(l))) info(l.replace(' — restart pending', ''));
+  } else {
+    warn(`PHP tuning check: ${lines.pop() || `exit ${r.code}`}`);
+  }
+  return systemctl(helpers, 'restart', service);
+}
+
 // Returns per-site metadata { [domain]: { root?, role?, pair? } }:
 //   root = SITE_ROOT_DOMAIN (the domain-map key its DB creds came from)
 //   role/pair = 'pc'|'mob' + the other half, so the portal can group them.

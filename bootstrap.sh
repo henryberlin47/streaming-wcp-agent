@@ -266,23 +266,27 @@ if nginx -t >/dev/null 2>&1 && systemctl reload nginx; then ok "default vhost se
 
 # ============================================================
 step "Tuning PHP-FPM"
-PHPV=""; for v in 8.4 8.3 8.2; do [ -f "/etc/php/$v/fpm/php.ini" ] && { PHPV=$v; break; }; done
-set_ini() { local f="$1" k="$2" val="$3"
-  if grep -qE "^[;[:space:]]*$k[[:space:]]*=" "$f"; then sed -i -E "s|^[;[:space:]]*$k[[:space:]]*=.*|$k = $val|" "$f"; else echo "$k = $val" >> "$f"; fi; }
-if [ -n "$PHPV" ]; then
-  INI="/etc/php/$PHPV/fpm/php.ini"; POOL="/etc/php/$PHPV/fpm/pool.d/www.conf"
-  set_ini "$INI" max_execution_time 600;  set_ini "$INI" max_input_time 600
-  set_ini "$INI" max_input_vars 3000;     set_ini "$INI" memory_limit 512M
-  set_ini "$INI" post_max_size 512M;      set_ini "$INI" upload_max_filesize 512M
-  set_ini "$INI" session.gc_maxlifetime 1440
-  if [ -f "$POOL" ]; then
-    set_ini "$POOL" pm.start_servers 12;  set_ini "$POOL" pm.min_spare_servers 8
-    set_ini "$POOL" pm.max_spare_servers 16; set_ini "$POOL" pm.max_children 30
-    set_ini "$POOL" pm.max_requests 500
+# Sites are created with --php83, so PHP 8.3 must exist NOW. If it only arrived
+# with the first deploy it would be installed AFTER this tuning ran and stay at
+# the defaults (memory 128M, default regex limits) — which is exactly how sites
+# ended up serving blank pages: WP Rocket dies on a large homepage.
+if [ ! -f /etc/php/8.3/fpm/php.ini ]; then
+  if try wo stack install --php83; then ok "PHP 8.3 installed (the version sites run on)"; else note_warn "could not install PHP 8.3 (wo stack install --php83)"; fi
+fi
+# The settings live in ONE place — scripts/tune-php.sh — shared with the agent,
+# which re-applies them before every PHP restart. It tunes every installed
+# version, validates with php-fpm -t, and rolls back rather than break PHP.
+TUNE=""
+for c in "$(dirname "$0")/scripts/tune-php.sh" "$INSTALL_DIR/scripts/tune-php.sh"; do [ -f "$c" ] && { TUNE="$c"; break; }; done
+if [ -n "$TUNE" ]; then
+  if out="$(bash "$TUNE" 2>&1)"; then
+    while IFS= read -r l; do [ -n "$l" ] && ok "$l"; done <<< "$out"
+  else
+    while IFS= read -r l; do [ -n "$l" ] && warn "$l"; done <<< "$out"
+    note_warn "PHP-FPM tuning reported a problem (the agent re-applies it on the next deploy)"
   fi
-  systemctl restart "php$PHPV-fpm" && ok "PHP $PHPV FPM tuned + restarted" || note_warn "php$PHPV-fpm failed to restart after tuning"
 else
-  note_warn "no PHP-FPM found under /etc/php — tuning skipped"
+  note_warn "scripts/tune-php.sh not found — PHP left untuned for now (the agent applies it on the first deploy)"
 fi
 
 # ============================================================

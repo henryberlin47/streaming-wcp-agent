@@ -38,6 +38,18 @@ The key in the URL is one-time and expires in 2 hours; the script is idempotent,
 so a half-finished run can simply be re-run. Part 1 remains the reference for
 what it does and for doing it manually.
 
+**PHP tuning is self-healing.** The values live in one place,
+[`scripts/tune-php.sh`](scripts/tune-php.sh) (memory 512M, raised `pcre.*`
+limits, FPM pool sizes — for *every* installed PHP version). The bootstrap
+installs PHP 8.3 up front and runs it, and the agent re-runs it before each PHP
+restart in deploy / alias / update, so an older server fixes itself on its next
+operation. Untuned PHP 8.3 is what makes WP Rocket serve a blank page (HTTP 200,
+empty body) on large homepages. To fix a server by hand right now:
+
+```bash
+sudo bash /opt/streaming-agent/scripts/tune-php.sh
+```
+
 ---
 
 # Part 1 — Fresh VPS (manual)

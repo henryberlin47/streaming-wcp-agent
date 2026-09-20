@@ -5,6 +5,7 @@ import {
   gitRemoteBranchExists, chownWww, wpCli, clearWpCaches, systemctl, nginxTest, nginxReload,
 } from '../lib/sys.js';
 import { logger } from '../lib/log.js';
+import { tuneAndRestartPhp } from '../lib/site.js';
 
 // ============================================================
 //  update — native port of deploy-update-streaming-site.sh
@@ -98,7 +99,7 @@ export async function runUpdate(job, helpers, p, opts = {}) {
 
     // 8) Restart php-fpm (clears OPcache), test + reload nginx.
     step('Restart php-fpm, reload nginx');
-    await systemctl(helpers, 'restart', 'php8.3-fpm');
+    await tuneAndRestartPhp(helpers, { info, warn }); // tunes PHP if needed, then the usual restart
     if (await nginxTest(helpers)) {
       await nginxReload(helpers);
       ok('nginx reloaded');

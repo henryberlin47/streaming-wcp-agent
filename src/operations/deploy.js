@@ -8,7 +8,7 @@ import {
 } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeMainCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp,
 } from '../lib/site.js';
 import { resolveFromMap } from '../lib/map.js';
 import { brandAdd, brandDelete, cdnAdd, cdnDelete } from '../lib/api.js';
@@ -143,7 +143,7 @@ export async function runDeploy(job, helpers, p) {
   } else {
     throw new Error('nginx -t failed after writing config');
   }
-  await systemctl(helpers, 'restart', 'php8.3-fpm');
+  await tuneAndRestartPhp(helpers, { info, warn }); // tunes PHP if needed, then the usual restart
   await systemctl(helpers, 'restart', 'cron');
   ok('php8.3-fpm + cron restarted');
 
