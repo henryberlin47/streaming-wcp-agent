@@ -5,6 +5,7 @@ import {
   nginxTest, nginxReload, systemctl, woSiteDelete, woSiteExists,
 } from '../lib/sys.js';
 import { logger } from '../lib/log.js';
+import { CERT_DIR } from '../lib/cert.js';
 
 // ============================================================
 //  delete — native port of delete-streaming-site.sh
@@ -86,6 +87,8 @@ export async function runDelete(job, helpers, p, opts = {}) {
   await removePath(`/etc/letsencrypt/live/${domain}`);
   await removePath(`/etc/letsencrypt/archive/${domain}`);
   await removePath(`/etc/letsencrypt/renewal/${domain}.conf`);
+  await removePath(`${CERT_DIR}/${domain}`); // a custom cert pasted from the portal
+  await removePath(`/etc/nginx/conf.d/force-ssl-${domain}.conf`); // its HTTP→HTTPS block (WordOps only removes its own)
   ok('Certificate files cleared');
 
   // 7b) If the WordOps admin panel (:22222) was pointed at THIS domain's cert

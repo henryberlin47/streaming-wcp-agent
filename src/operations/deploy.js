@@ -8,7 +8,7 @@ import {
 } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeMainCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost,
 } from '../lib/site.js';
 import { resolveFromMap } from '../lib/map.js';
 import { brandAdd, brandDelete, cdnAdd, cdnDelete } from '../lib/api.js';
@@ -107,7 +107,9 @@ export async function runDeploy(job, helpers, p) {
   // BB_CLEAN_OLD_POSTS stays commented out.
   await commentOutEnv(ENV_FILE, 'TELEGRAM_THREAD_BB_CLEAN_OLD_POSTS');
 
-  await setEnv(ENV_FILE, 'WP_HOME', `https://${domain}`);
+  // WWW preference: as asked, else what the site already has (a redeploy must not reset it).
+  const www = p.www || (await siteWww(domain)) || 'nonwww';
+  await setEnv(ENV_FILE, 'WP_HOME', `https://${canonicalHost(domain, www)}`);
   await setWpSiteUrl(ENV_FILE);
   await setEnv(ENV_FILE, 'ADVMO_DOS_DOMAIN', `https://${CDN_DOMAIN}/`);
   await setEnv(ENV_FILE, 'SITE_ROLE', 'main');
@@ -125,7 +127,8 @@ export async function runDeploy(job, helpers, p) {
 
   // 8) Nginx + 15-job cron.
   step('Write nginx vhost + cron');
-  await writeNginxVhost({ domain, siteDir: SITE_DIR, webroot: WEBROOT });
+  await writeNginxVhost({ domain, siteDir: SITE_DIR, webroot: WEBROOT, www });
+  info(`www: ${www === 'off' ? 'not served' : `served, redirects to ${canonicalHost(domain, www)}`}`);
   await writeMainCron({ domain, cronFile: CRON_FILE, src: SRC });
   await finalizeCronPerms(helpers, CRON_FILE);
   ok(`nginx vhost + ${CRON_FILE} (15 jobs)`);
@@ -155,7 +158,7 @@ export async function runDeploy(job, helpers, p) {
   // 12) SSL.
   step('Issue SSL certificate');
   let sslOk = false;
-  if (await woSiteSsl(helpers, domain)) {
+  if (await woSiteSsl(helpers, domain, www)) {
     sslOk = true;
     if (await nginxTest(helpers)) await nginxReload(helpers);
     ok(`SSL installed for ${domain}`);

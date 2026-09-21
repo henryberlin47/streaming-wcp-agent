@@ -18,11 +18,11 @@ const { siteRoles } = await import(`${A}/src/lib/site.js`);
 const meta = await siteRoles(["main.com", "m.main.com", "orphan.com", "plain.com", "nofile.com"]);
 console.log(meta);
 assert.deepEqual(meta, {
-  "main.com":   { root: "main.com", role: "pc",  pair: "m.main.com" }, // main knows its alias + its root
-  "m.main.com": { root: "main.com", role: "mob", pair: "main.com" },   // alias knows its main; root inherited
-  "plain.com":  { root: "brand.com" },                                  // root shown even with no pair
+  "main.com":   { root: "main.com", role: "pc",  pair: "m.main.com", ssl: "none" }, // main knows its alias + its root
+  "m.main.com": { root: "main.com", role: "mob", pair: "main.com", ssl: "none" },   // alias knows its main; root inherited
+  "plain.com":  { root: "brand.com", ssl: "none" },                                  // root shown even with no pair
+  "orphan.com": { ssl: "none" },                                                     // deleted alias: no stale PC tag
+  "nofile.com": { ssl: "none" },                                                     // no .env: nothing but the SSL state
 });
-assert.ok(!("orphan.com" in meta), "deleted alias must not leave a stale PC tag");
-assert.ok(!("nofile.com" in meta), "a site with no .env shows nothing");
 console.log("PASS: root + pc/mob derived from disk, no stale tag after alias deletion, untagged otherwise");
 fs.rmSync(www, { recursive: true, force: true });

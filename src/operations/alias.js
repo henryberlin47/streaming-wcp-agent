@@ -4,7 +4,7 @@ import { runOrThrow, pathExists, woSiteExists, clearWpCaches, systemctl, nginxTe
 import { injectEnv, readEnv, setEnv, setWpSiteUrl } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeAliasCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost,
 } from '../lib/site.js';
 import { brandAdd, cdnAdd } from '../lib/api.js';
 import { APP_REPO_DEFAULT, BRANCH_DEFAULT } from '../lib/siteConfig.js';
@@ -79,7 +79,8 @@ export async function runAlias(job, helpers, p, opts = {}) {
 
   // 6) Swap alias-specific values.
   step('Swap alias-specific .env values');
-  await setEnv(ENV_FILE, 'WP_HOME', `https://${domain}`);
+  const www = p.www || (await siteWww(domain)) || 'nonwww'; // a redeploy keeps the site's WWW preference
+  await setEnv(ENV_FILE, 'WP_HOME', `https://${canonicalHost(domain, www)}`);
   await setWpSiteUrl(ENV_FILE);
   await setEnv(ENV_FILE, 'ADVMO_DOS_DOMAIN', `https://${CDN_DOMAIN}/`);
   await setEnv(ENV_FILE, 'SITE_ROLE', 'clone');
@@ -88,7 +89,7 @@ export async function runAlias(job, helpers, p, opts = {}) {
 
   // 7) Nginx + 4-job cron.
   step('Write nginx vhost + cron');
-  await writeNginxVhost({ domain, siteDir: SITE_DIR, webroot: WEBROOT });
+  await writeNginxVhost({ domain, siteDir: SITE_DIR, webroot: WEBROOT, www });
   ok('Nginx config written');
   await writeAliasCron({ domain, cronFile: CRON_FILE, src: SRC });
   await finalizeCronPerms(helpers, CRON_FILE);
@@ -120,7 +121,7 @@ export async function runAlias(job, helpers, p, opts = {}) {
   // 11) SSL.
   step('Issue SSL certificate');
   let sslOk = false;
-  if (await woSiteSsl(helpers, domain)) {
+  if (await woSiteSsl(helpers, domain, www)) {
     sslOk = true;
     if (await nginxTest(helpers)) await nginxReload(helpers);
     ok('SSL installed');

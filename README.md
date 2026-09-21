@@ -26,6 +26,41 @@ parameters: `delete` requires `confirm:true`, `deploy` requires `root` (no DB
 selector — creds resolve from the map), and `cleanup` uses `mode:replace`
 (the interactive `all` mode is rejected).
 
+### SSL: Let's Encrypt or a custom certificate
+
+`POST /api/op/ssl` with `{ domain }` re-issues Let's Encrypt. With
+`{ domain, cert, key }` (PEM) it installs a pasted certificate instead:
+
+- the pair is validated **before** the job is queued — key matches the cert, the
+  cert covers the domain (SAN/wildcard), not expired, key not passphrase-protected
+  — so a bad paste is a `400` with the reason;
+- files go to `/etc/ssl/wcp/<domain>/` (key `0600`), outside `/etc/letsencrypt`
+  so acme.sh never touches them; the site's `conf/nginx/ssl.conf` keeps its own
+  `listen` lines and only the certificate lines change; an HTTP→HTTPS block is
+  added if the site had none;
+- `nginx -t` gates the reload, and everything is restored if it fails;
+- the key is redacted from job views and dropped from memory after the run.
+
+A custom certificate does **not** auto-renew. Re-issuing Let's Encrypt switches
+back. `GET /api/sites` reports each site's `ssl` (`letsencrypt` | `custom` |
+`none`) and `ssl_expires`, read from what nginx is actually configured with.
+
+### WWW preference
+
+Per site, one of `nonwww` (default: `www.<domain>` is served and 301s to
+`<domain>`), `www` (the reverse) or `off` (`www` is not served, and Let's Encrypt
+is issued with `--letsencrypt=subdomain` so a missing `www` DNS record can't fail
+it). Set at deploy time (`www` param of `deploy`/`alias`; absent = keep the
+site's, else WordOps' own choice) or on a live site with
+`POST /api/op/www { domain, mode }`.
+
+The redirect is an nginx server block (not WordPress), `WP_HOME` is kept in step
+so the two never fight, and caches are purged when the host changes. Switching to
+`www` is refused — before anything changes — if the certificate doesn't cover
+`www.<domain>` (a Let's Encrypt cert is re-issued with it first). The mode is read
+back from the vhost, so `GET /api/sites` reports `www` for every site; a vhost
+written before this feature reads as `nonwww`, which is what it did.
+
 ## Install
 
 **Full fresh-VPS walkthrough — including WordOps, Redis, Node, and Tailscale — is

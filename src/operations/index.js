@@ -10,7 +10,9 @@ import { runMigrate } from './migrate.js';
 import { runSelfUpdate } from './selfupdate.js';
 import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
-import { tunePhpNow } from '../lib/site.js';
+import { tunePhpNow, WWW_MODES } from '../lib/site.js';
+import { runWww } from './www.js';
+import { checkCertPair } from '../lib/cert.js';
 import { logger } from '../lib/log.js';
 
 // ============================================================
@@ -83,6 +85,9 @@ function isDomain(v) {
 function reqDomain(errors, name, v) {
   if (!isDomain(v)) errors.push(`${name} must be a valid domain`);
 }
+function optWww(errors, v) {
+  if (v != null && !WWW_MODES.includes(v)) errors.push(`www must be one of: ${WWW_MODES.join(', ')}`);
+}
 function optBranch(errors, v) {
   if (v != null && !BRANCH_RE.test(v)) errors.push('branch has invalid characters');
 }
@@ -105,7 +110,9 @@ const deploy = {
     if (p.delete && p.delete === p.domain) errors.push('delete cannot equal domain');
     optBranch(errors, p.branch);
     optRepo(errors, p.repo);
+    optWww(errors, p.www);
     const clean = {
+      www: p.www || null,   // WWW preference; null = keep the site's / default (nonwww)
       domain: p.domain,
       root: p.root || null,
       delete: p.delete || null,
@@ -178,7 +185,9 @@ const alias = {
     }
     optBranch(errors, p.branch);
     optRepo(errors, p.repo);
+    optWww(errors, p.www);
     const clean = {
+      www: p.www || null,
       aliasDomain: p.aliasDomain,
       mainDomain: p.mainDomain,
       branch: p.branch || null,
@@ -242,15 +251,38 @@ const cdn = {
 // ============================================================
 const ssl = {
   name: 'ssl',
-  // params: { domain }
+  // params: { domain }              -> re-issue Let's Encrypt
+  //         { domain, cert, key }   -> install a pasted certificate (PEM)
   validate(p = {}) {
     p = sanitize(p);
     const errors = [];
     reqDomain(errors, 'domain', p.domain);
-    return { ok: errors.length === 0, errors, clean: { domain: p.domain } };
+    if (p.cert == null && p.key == null) return { ok: errors.length === 0, errors, clean: { domain: p.domain } };
+    // Checked here, not just in the job, so a bad paste is a 400 the dialog can
+    // show at once rather than a failed operation to go and read.
+    if (!errors.length) errors.push(...checkCertPair({ cert: p.cert, key: p.key, domain: p.domain }).errors);
+    return { ok: errors.length === 0, errors, clean: { domain: p.domain, cert: p.cert, key: p.key } };
   },
   async run(job, helpers, p) {
     await runSsl(job, helpers, p);
+  },
+};
+
+// ============================================================
+//  www — a live site's WWW preference: nonwww | www | off
+// ============================================================
+const www = {
+  name: 'www',
+  // params: { domain, mode }
+  validate(p = {}) {
+    p = sanitize(p);
+    const errors = [];
+    reqDomain(errors, 'domain', p.domain);
+    if (!WWW_MODES.includes(p.mode)) errors.push(`mode must be one of: ${WWW_MODES.join(', ')}`);
+    return { ok: errors.length === 0, errors, clean: { domain: p.domain, mode: p.mode } };
+  },
+  async run(job, helpers, p) {
+    await runWww(job, helpers, p);
   },
 };
 
@@ -364,7 +396,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www };
 
 export function getOperation(type) {
   return operations[type] || null;

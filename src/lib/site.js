@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import config from '../config.js';
 import { run, runOrThrow, pathExists, systemctl, GIT_SSH_ARGS, explainGitError } from './sys.js';
 import { readEnv } from './envfile.js';
+import { siteSsl, NGINX_DIR } from './cert.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_CONF_TEMPLATE = path.join(__dirname, '..', 'templates', 'custom-cache.conf');
@@ -12,14 +13,55 @@ const CACHE_CONF_TEMPLATE = path.join(__dirname, '..', 'templates', 'custom-cach
 //  site.js — WordOps site scaffolding (nginx, cron, wo, SSL)
 // ============================================================
 
+// ---- WWW preference ---------------------------------------------------------
+//   nonwww  www.<domain> is served and 301s to <domain>          (the default)
+//   www     <domain> is served and 301s to www.<domain>
+//   off     www.<domain> is not served at all (no vhost name, no www in the LE cert
+//           — for domains whose www has no DNS record, which otherwise breaks LE)
+export const WWW_MODES = ['nonwww', 'www', 'off'];
+export const canonicalHost = (domain, www) => (www === 'www' ? `www.${domain}` : domain);
+
+// A site's current mode, read from its vhost (the truth nginx serves), or null
+// if it has none. A vhost from before this existed (one block, both names — the
+// redirect happened inside WordPress) reads as 'nonwww', which is what it did.
+export async function siteWww(domain) {
+  let conf;
+  try { conf = await fs.readFile(`${NGINX_DIR}/sites-available/${domain}`, 'utf8'); } catch { return null; }
+  const names = [...conf.matchAll(/^\s*server_name\s+([^;]+);/gm)].flatMap((m) => m[1].trim().split(/\s+/));
+  if (!names.includes(`www.${domain}`)) return 'off';
+  return names[0] === `www.${domain}` ? 'www' : 'nonwww';
+}
+
 // Write the main nginx vhost + the shared custom-cache.conf include, and enable
 // the site (symlink into sites-enabled).
-export async function writeNginxVhost({ domain, siteDir, webroot }) {
-  const available = `/etc/nginx/sites-available/${domain}`;
-  const enabled = `/etc/nginx/sites-enabled/${domain}`;
+export async function writeNginxVhost({ domain, siteDir, webroot, www = 'nonwww' }) {
+  const available = `${NGINX_DIR}/sites-available/${domain}`;
+  const enabled = `${NGINX_DIR}/sites-enabled/${domain}`;
+  const main = canonicalHost(domain, www);
+  const other = www === 'off' ? null : (www === 'www' ? domain : `www.${domain}`);
+
+  // The non-canonical host gets its own block so the redirect happens in nginx
+  // (no PHP, works for cached pages). `ssl*.conf` is a glob on purpose: it picks
+  // up the site's listen-443 + certificate once SSL exists and matches nothing
+  // before that — then the block is plain :80 and $scheme keeps it on http.
+  // ACME challenges are answered here too, so Let's Encrypt can validate it.
+  const redirect = other ? `
+server {
+    server_name ${other};
+    include ${siteDir}/conf/nginx/ssl*.conf;
+    location ^~ /.well-known/acme-challenge/ {
+        alias /var/www/html/.well-known/acme-challenge/;
+        allow all;
+        auth_basic off;
+    }
+    location / {
+        return 301 $scheme://${main}$request_uri;
+    }
+}
+` : '';
 
   const vhost = `server {
-    server_name ${domain} www.${domain};
+    server_name ${main};
 
     access_log /var/log/nginx/${domain}.access.log;
     error_log  /var/log/nginx/${domain}.error.log;
@@ -31,7 +73,7 @@ export async function writeNginxVhost({ domain, siteDir, webroot }) {
     include common/locations-wo.conf;
     include ${siteDir}/conf/nginx/*.conf;
 }
-`;
+${redirect}`;
   await fs.writeFile(available, vhost);
   // enable (idempotent symlink)
   await fs.rm(enabled, { force: true });
@@ -150,7 +192,7 @@ export async function tuneAndRestartPhp(helpers, { info, warn }, service = 'php8
   return systemctl(helpers, 'restart', service);
 }
 
-// Returns per-site metadata { [domain]: { root?, role?, pair? } }:
+// Returns per-site metadata { [domain]: { root?, role?, pair?, ssl?, ssl_expires?, www? } }:
 //   root = SITE_ROOT_DOMAIN (the domain-map key its DB creds came from)
 //   role/pair = 'pc'|'mob' + the other half, so the portal can group them.
 // Domains with none of these are omitted.
@@ -161,7 +203,8 @@ export async function siteRoles(sites) {
   await Promise.all(sites.map(async (d) => {
     const env = `${config.wwwDir}/${d}/htdocs/src/.env`;
     const root = await readEnv(env, 'SITE_ROOT_DOMAIN');
-    if (root) meta[d] = { root };
+    const www = await siteWww(d); // 'nonwww' | 'www' | 'off' (absent = no vhost)
+    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }) };
     if ((await readEnv(env, 'SITE_ROLE')) === 'clone') { mobs.add(d); return; }
     const mob = await readEnv(env, 'SITE_MOBILE_HOST');
     if (mob && live.has(mob)) meta[d] = { ...meta[d], role: 'pc', pair: mob };
@@ -235,8 +278,12 @@ export async function woSiteCreate(helpers, domain) {
 }
 
 // wo site update <domain> --le --force ; returns true on success (SSL issued).
-export async function woSiteSsl(helpers, domain) {
-  const r = await run(helpers, 'wo', ['site', 'update', domain, '--le', '--force']);
+// WordOps adds www.<domain> to the certificate of every non-subdomain site, and
+// the whole issuance fails when www has no DNS. With www off (read from the
+// vhost unless given) it is asked for the bare domain only.
+export async function woSiteSsl(helpers, domain, www) {
+  const mode = www || (await siteWww(domain));
+  const r = await run(helpers, 'wo', ['site', 'update', domain, mode === 'off' ? '--letsencrypt=subdomain' : '--le', '--force']);
   return r.code === 0;
 }
 
