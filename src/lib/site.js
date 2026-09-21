@@ -192,7 +192,21 @@ export async function tuneAndRestartPhp(helpers, { info, warn }, service = 'php8
   return systemctl(helpers, 'restart', service);
 }
 
-// Returns per-site metadata { [domain]: { root?, role?, pair?, ssl?, ssl_expires?, www? } }:
+// The code a site runs: { repo: 'owner/name', branch } — read from htdocs/.git
+// directly (two small files) rather than spawning git twice per site per listing.
+// A detached HEAD reports the short commit as the branch; no checkout = {}.
+export async function siteGit(domain) {
+  const git = `${config.wwwDir}/${domain}/htdocs/.git`;
+  const read = (f) => fs.readFile(`${git}/${f}`, 'utf8').catch(() => '');
+  const head = (await read('HEAD')).trim();
+  if (!head) return {};
+  const branch = head.startsWith('ref: refs/heads/') ? head.slice(16) : head.slice(0, 7);
+  const url = /\[remote "origin"\][^\[]*?^\s*url\s*=\s*(\S+)/m.exec(await read('config'))?.[1] || '';
+  const repo = url.replace(/\.git$/, '').split(/[:/]/).slice(-2).join('/'); // git@host:owner/name(.git) or https://host/owner/name
+  return { branch, ...(repo && { repo }) };
+}
+
+// Returns per-site metadata { [domain]: { root?, role?, pair?, ssl?, ssl_expires?, www?, repo?, branch? } }:
 //   root = SITE_ROOT_DOMAIN (the domain-map key its DB creds came from)
 //   role/pair = 'pc'|'mob' + the other half, so the portal can group them.
 // Domains with none of these are omitted.
@@ -204,7 +218,7 @@ export async function siteRoles(sites) {
     const env = `${config.wwwDir}/${d}/htdocs/src/.env`;
     const root = await readEnv(env, 'SITE_ROOT_DOMAIN');
     const www = await siteWww(d); // 'nonwww' | 'www' | 'off' (absent = no vhost)
-    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }) };
+    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }), ...(await siteGit(d)) };
     if ((await readEnv(env, 'SITE_ROLE')) === 'clone') { mobs.add(d); return; }
     const mob = await readEnv(env, 'SITE_MOBILE_HOST');
     if (mob && live.has(mob)) meta[d] = { ...meta[d], role: 'pc', pair: mob };

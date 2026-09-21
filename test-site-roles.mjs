@@ -14,13 +14,21 @@ env("plain.com",  "SITE_ROLE=main\nSITE_ROOT_DOMAIN=brand.com\n");    // no alia
 fs.mkdirSync(path.join(www, "nofile.com"), { recursive: true });      // no .env at all -> nothing
 process.env.AGENT_WWW_DIR = www;
 
+// main.com has a real checkout on a feature branch; plain.com is on a detached HEAD
+const gitDir = (d, head, url) => {
+  const g = path.join(www, d, "htdocs/.git"); fs.mkdirSync(g, { recursive: true });
+  fs.writeFileSync(path.join(g, "HEAD"), head);
+  fs.writeFileSync(path.join(g, "config"), `[core]\n\tbare = false\n[remote "origin"]\n\turl = ${url}\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n[branch "x"]\n\tremote = origin\n`);
+};
+gitDir("main.com", "ref: refs/heads/feature/nginx-wprocket\n", "git@github.com:acme/xoilac-ols.git");
+gitDir("plain.com", "0123456789abcdef0123456789abcdef01234567\n", "https://github.com/acme/other-app");
 const { siteRoles } = await import(`${A}/src/lib/site.js`);
 const meta = await siteRoles(["main.com", "m.main.com", "orphan.com", "plain.com", "nofile.com"]);
 console.log(meta);
 assert.deepEqual(meta, {
-  "main.com":   { root: "main.com", role: "pc",  pair: "m.main.com", ssl: "none" }, // main knows its alias + its root
+  "main.com":   { root: "main.com", role: "pc",  pair: "m.main.com", ssl: "none", repo: "acme/xoilac-ols", branch: "feature/nginx-wprocket" }, // main knows its alias + its root
   "m.main.com": { root: "main.com", role: "mob", pair: "main.com", ssl: "none" },   // alias knows its main; root inherited
-  "plain.com":  { root: "brand.com", ssl: "none" },                                  // root shown even with no pair
+  "plain.com":  { root: "brand.com", ssl: "none", repo: "acme/other-app", branch: "0123456" },                                  // root shown even with no pair
   "orphan.com": { ssl: "none" },                                                     // deleted alias: no stale PC tag
   "nofile.com": { ssl: "none" },                                                     // no .env: nothing but the SSL state
 });
