@@ -232,6 +232,8 @@ export async function siteRoles(sites) {
   return meta;
 }
 
+const CLONE_BEAT_MS = parseInt(process.env.AGENT_CLONE_BEAT_MS || '15000', 10); // env: tests only
+
 // Clone the app repo into a site's htdocs, without ever destroying a live site.
 //   - A DEPLOYED site (one with src/.env) is refused unless `force`; with force
 //     the clone goes to a temp dir, is layout-checked, then swapped in — the old
@@ -245,9 +247,28 @@ export async function cloneRepo(helpers, { htdocs, branch, repo, force = false }
   const live = await pathExists(`${htdocs}/src/.env`);
   // Clone with a non-prompting ssh, and on failure say WHY (key not authorised,
   // unknown host, no access, network) rather than a bare exit code.
+  // A clone is silent without a TTY, so a slow one and a hung one look the same
+  // in the job log. Say every 15s how long it has run and how much has arrived:
+  // growing = slow network / big repo, flat = stalled.
   const gitClone = async (cwd) => {
-    const r = await run(helpers, 'git', [...GIT_SSH_ARGS, 'clone', '-b', branch, repo, '.'], { cwd, quiet: true });
+    const started = Date.now();
+    const silent = { log() {}, err() {}, onCancel() {} };
+    const beat = setInterval(async () => {
+      const du = await run(silent, 'du', ['-sm', cwd], { quiet: true }).catch(() => null);
+      helpers.log(`    … still cloning — ${Math.round((Date.now() - started) / 1000)}s, ${parseInt(du?.stdout, 10) || 0} MB received`);
+    }, CLONE_BEAT_MS);
+    let r;
+    try {
+      // Shallow + single-branch: a deploy needs the branch's files, not the
+      // repo's whole history on every branch — that was most of the transfer,
+      // and the long silent download is where deploys sat "stuck". The update op
+      // fetches the one branch it needs, so switching branches still works.
+      r = await run(helpers, 'git', [...GIT_SSH_ARGS, 'clone', '--depth', '1', '-b', branch, repo, '.'], { cwd, quiet: true });
+    } finally {
+      clearInterval(beat);
+    }
     if (r.code !== 0) throw new Error(explainGitError(r.stderr, repo));
+    helpers.log(`    cloned in ${Math.round((Date.now() - started) / 1000)}s`);
   };
 
   if (!live) {

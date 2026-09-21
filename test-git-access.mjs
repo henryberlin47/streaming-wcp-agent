@@ -44,7 +44,7 @@ await assert.rejects(() => cloneMap(mk().helpers), (e) => {
 // when ~/.ssh/config pins a different one with IdentitiesOnly (the real-world
 // failure: right key on GitHub, never presented, "Permission denied").
 assert.equal(GIT_SSH_ARGS[0], "-c");
-assert.equal(GIT_SSH_ARGS[1], `core.sshCommand=ssh -i ${base}/.ssh/id_ed25519 -o BatchMode=yes -o ConnectTimeout=15`);
+assert.equal(GIT_SSH_ARGS[1], `core.sshCommand=ssh -i ${base}/.ssh/id_ed25519 -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4`);
 console.log("2. cloneMap reports the real cause instead of 'check root SSH access'");
 
 // ---- 3. sshcheck: authenticated, map readable, app repo NOT → precise verdict

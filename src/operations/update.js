@@ -2,7 +2,7 @@ import config from '../config.js';
 import fs from 'node:fs/promises';
 import {
   run, runOrThrow, pathExists, git, gitShortHead, gitCurrentBranch,
-  gitRemoteBranchExists, chownWww, wpCli, clearWpCaches, systemctl, nginxTest, nginxReload,
+  gitRemoteBranchExists, explainGitError, chownWww, wpCli, clearWpCaches, systemctl, nginxTest, nginxReload,
 } from '../lib/sys.js';
 import { logger } from '../lib/log.js';
 import { tuneAndRestartPhp } from '../lib/site.js';
@@ -56,8 +56,20 @@ export async function runUpdate(job, helpers, p, opts = {}) {
     const branch = p.branch || (['HEAD', 'unknown'].includes(curBranch) ? DEFAULT_BRANCH : curBranch);
     if (curBranch !== branch) info(`Repo on '${curBranch}'; switching to '${branch}'`);
 
-    await runOrThrow(helpers, 'git', ['-C', HTDOCS, 'fetch', 'origin', '--quiet']);
-    if (!(await gitRemoteBranchExists(helpers, HTDOCS, branch))) {
+    // Fetch exactly the branch wanted, by explicit refspec: works the same for
+    // the shallow single-branch clones deploy makes now and the full clones of
+    // older sites, and is how a shallow site can switch to another branch.
+    // Shallow repos stay shallow (--depth 1); full ones are left full.
+    const shallow = await pathExists(`${HTDOCS}/.git/shallow`);
+    const f = await run(helpers, 'git', ['-C', HTDOCS, 'fetch', '--quiet', ...(shallow ? ['--depth', '1'] : []), 'origin',
+      `+refs/heads/${branch}:refs/remotes/origin/${branch}`], { quiet: true });
+    // A failed fetch must stop here — otherwise a stale local origin/<branch>
+    // would be "deployed" as if it were new. (A missing branch falls through to
+    // the clearer message below.)
+    if (f.code !== 0 && !/couldn't find remote ref/i.test(f.stderr)) {
+      throw new Error(`git fetch failed — nothing changed. ${explainGitError(f.stderr, 'origin')}`);
+    }
+    if (f.code !== 0 || !(await gitRemoteBranchExists(helpers, HTDOCS, branch))) {
       throw new Error(`origin/${branch} not found on remote — nothing changed`);
     }
 

@@ -51,7 +51,9 @@ export function run(helpers, command, args = [], opts = {}) {
     let stderr = '';
     let killed = false;
 
+    let exited = false;
     onCancel?.((reason) => {
+      if (exited) return; // cancel handlers outlive their command: never signal a finished pid
       killed = true;
       err?.(`[cancel:${reason}] SIGTERM → pid ${child.pid}`);
       try { child.kill('SIGTERM'); } catch {}
@@ -66,6 +68,7 @@ export function run(helpers, command, args = [], opts = {}) {
 
     child.on('error', (e) => reject(new Error(`spawn failed for ${cmd}: ${e.message}`)));
     child.on('close', (code, signal) => {
+      exited = true;
       if (killed) return reject(new Error(`cancelled (signal ${signal || 'n/a'})`));
       const c = code ?? -1;
       // Failure is the only time the raw command + output are worth the noise.
@@ -219,7 +222,10 @@ export async function woSiteList(helpers) {
 // "Permission denied" even though the right key was added. -i is additive (any
 // configured identities are still tried) and a missing file is only a warning.
 export const AGENT_SSH_KEY = `${os.homedir()}/.ssh/id_ed25519`;
-export const GIT_SSH_CMD = `ssh -i ${AGENT_SSH_KEY} -o BatchMode=yes -o ConnectTimeout=15`;
+// ConnectTimeout only bounds the TCP connect. Without keepalives a connection
+// that goes silent mid-transfer hangs the job until its timeout; with them ssh
+// gives up after ~60s of a dead link and the step fails with a reason.
+export const GIT_SSH_CMD = `ssh -i ${AGENT_SSH_KEY} -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4`;
 export const GIT_SSH_ARGS = ['-c', `core.sshCommand=${GIT_SSH_CMD}`];
 
 // A git-over-SSH failure as root has a handful of well-known causes, and git's
@@ -238,8 +244,8 @@ export function explainGitError(stderr, repo) {
   if (/Repository not found|does not appear to be a git repository/i.test(s)) {
     return `The SSH key authenticated, but that GitHub account cannot see ${repo} (no access to it, or the URL is wrong).${tail}`;
   }
-  if (/Could not resolve hostname|Temporary failure in name resolution|Connection timed out|Network is unreachable|Connection refused/i.test(s)) {
-    return `Network/DNS problem reaching github.com from this server.${tail}`;
+  if (/Could not resolve hostname|Temporary failure in name resolution|Connection timed out|Network is unreachable|Connection refused|Timeout, server .* not responding|Connection reset|Broken pipe|early EOF|unexpected disconnect/i.test(s)) {
+    return `Network/DNS problem reaching github.com from this server (the connection failed or went silent mid-transfer).${tail}`;
   }
   return `git could not reach ${repo}.${tail}`;
 }
