@@ -76,6 +76,9 @@ function sanitize(p) {
   const out = { ...p };
   for (const k of DOMAIN_FIELDS) if (typeof out[k] === 'string') out[k] = normDomain(out[k]);
   for (const k of TRIM_FIELDS) if (typeof out[k] === 'string') out[k] = out[k].trim();
+  // "owner/name" (as the site list shows it) means the GitHub SSH URL — the
+  // allowlist is still checked against the expanded form.
+  if (typeof out.repo === 'string' && /^[\w.-]+\/[\w.-]+$/.test(out.repo)) out.repo = `git@github.com:${out.repo.replace(/\.git$/, '')}.git`;
   return out;
 }
 
@@ -134,13 +137,14 @@ const deploy = {
 // ============================================================
 const update = {
   name: 'update',
-  // params: { domain, branch? }
+  // params: { domain, branch?, repo? }  — branch/repo switch the live site's checkout
   validate(p = {}) {
     p = sanitize(p);
     const errors = [];
     reqDomain(errors, 'domain', p.domain);
     optBranch(errors, p.branch);
-    return { ok: errors.length === 0, errors, clean: { domain: p.domain, branch: p.branch || null } };
+    optRepo(errors, p.repo);
+    return { ok: errors.length === 0, errors, clean: { domain: p.domain, branch: p.branch || null, repo: p.repo || null } };
   },
   async run(job, helpers, p) {
     // Native JS implementation — no longer shells out.

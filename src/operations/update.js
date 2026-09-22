@@ -55,6 +55,15 @@ export async function runUpdate(job, helpers, p, opts = {}) {
     // the project default if HEAD is detached/unknown.
     const branch = p.branch || (['HEAD', 'unknown'].includes(curBranch) ? DEFAULT_BRANCH : curBranch);
     if (curBranch !== branch) info(`Repo on '${curBranch}'; switching to '${branch}'`);
+    // Switch repository in place: only the remote URL changes, so .env, uploads
+    // and caches stay. (The URL passed validate()'s allowlist.)
+    if (p.repo) {
+      const cur = (await run(helpers, 'git', ['-C', HTDOCS, 'remote', 'get-url', 'origin'], { quiet: true })).stdout.trim();
+      if (cur !== p.repo) {
+        await runOrThrow(helpers, 'git', ['-C', HTDOCS, 'remote', 'set-url', 'origin', p.repo]);
+        info(`Repository switched: ${cur || '(none)'} → ${p.repo}`);
+      }
+    }
 
     // Fetch exactly the branch wanted, by explicit refspec: works the same for
     // the shallow single-branch clones deploy makes now and the full clones of

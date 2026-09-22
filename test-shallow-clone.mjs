@@ -55,13 +55,22 @@ await run(helpers, "git", ["-C", full, "fetch", "--quiet", "origin", "+refs/head
 assert.ok(!fs.existsSync(path.join(full, ".git/shallow")));
 console.log("4. existing full clones are not truncated");
 
-// 5) cancelling a job never signals commands that already finished
+// 5) update validate: "owner/name" expands to the allowed SSH URL; anything else is refused
+const { operations } = await import(path.join(A, "src/operations/index.js"));
+const v = operations.update.validate({ domain: "site.com", repo: "yosuahernandez468-png/xoilac-ols", branch: "JA-Theme" });
+assert.ok(v.ok, v.errors.join()); assert.equal(v.clean.repo, "git@github.com:yosuahernandez468-png/xoilac-ols.git"); assert.equal(v.clean.branch, "JA-Theme");
+assert.equal(operations.update.validate({ domain: "site.com", repo: "evil/other" }).ok, false, "not on the allowlist");
+assert.equal(operations.update.validate({ domain: "site.com", repo: "ext::sh -c id" }).ok, false);
+assert.equal(operations.update.validate({ domain: "site.com" }).clean.repo, null);
+console.log("5. update: repo shorthand expands, allowlist enforced");
+
+// 6) cancelling a job never signals commands that already finished
 const cancels = []; const errs = [];
 const h2 = { log() {}, err: (l) => errs.push(l), onCancel: (fn) => cancels.push(fn) };
 await run(h2, "true", [], { quiet: true }); await run(h2, "true", [], { quiet: true });
 for (const fn of cancels) fn("cancelled");
 assert.deepEqual(errs, [], "no SIGTERM lines for finished pids");
-console.log("5. cancel only signals what is still running");
+console.log("6. cancel only signals what is still running");
 
 console.log("\nPASS: deploys clone shallow + single-branch, and update still works on them");
 fs.rmSync(base, { recursive: true, force: true });
