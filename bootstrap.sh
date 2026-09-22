@@ -214,8 +214,46 @@ try wo --version && ok "wo runs ($(wo --version 2>/dev/null | head -n1))" || die
 
 # ============================================================
 step "Installing WordOps stack + Redis"
-if try wo stack install; then ok "base stack installed"; else note_warn "wo stack install returned non-zero"; fi
-if try wo stack install --redis; then ok "Redis stack installed"; else note_warn "wo stack install --redis returned non-zero"; fi
+# A fresh Ubuntu runs unattended-upgrades / apt-daily right after first boot and
+# holds the dpkg lock for minutes; any apt underneath `wo` then fails with a bare
+# "Oops Something went wrong". Wait for the lock to clear first (up to 10 min).
+wait_for_apt() {
+  command -v fuser >/dev/null 2>&1 || return 0
+  local i
+  for ((i = 0; i < 120; i++)); do
+    fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1 || return 0
+    [ "$i" -eq 0 ] && info "apt/dpkg is busy (unattended-upgrades on a fresh VM) — waiting for it"
+    sleep 5
+  done
+  warn "apt/dpkg still locked after 10 min — continuing anyway"
+}
+# `wo` swallows apt's error; the reason is only in its log. Show it on failure.
+wo_stack() {
+  wait_for_apt
+  if try wo stack install "$@"; then return 0; fi
+  [ -f /var/log/wo/wordops.log ] && { echo "       --- /var/log/wo/wordops.log ---" >&2; grep -vE '^\s*$' /var/log/wo/wordops.log | tail -n 25 | sed 's/^/       /' >&2; }
+  return 1
+}
+# WordOps adds its PHP and nginx repositories as Launchpad PPAs, and
+# add-apt-repository must reach api.launchpad.net to do so. A cloud VM that has
+# an IPv6 address but no working IPv6 route fails exactly there (Python tries
+# IPv6 first), and `wo` then dies with "Unable to locate package php8.x-…".
+# If Launchpad answers over IPv4 but not IPv6, prefer IPv4 system-wide.
+prefer_ipv4_if_needed() {
+  curl -6 -sS -m 8 -o /dev/null https://api.launchpad.net/ 2>/dev/null && return 0
+  if ! curl -4 -sS -m 8 -o /dev/null https://api.launchpad.net/ 2>/dev/null; then
+    note_warn "api.launchpad.net is unreachable over IPv4 and IPv6 — the PHP/nginx PPAs cannot be added from this network"
+    return 1
+  fi
+  grep -qE '^precedence ::ffff:0:0/96[[:space:]]+100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+  ok "Launchpad reachable over IPv4 only — IPv4 preferred (gai.conf + apt) so PPAs can be added"
+}
+prefer_ipv4_if_needed
+wait_for_apt
+try apt-get update -qq || note_warn "apt-get update returned non-zero"
+if retry 3 wo_stack; then ok "base stack installed"; else note_warn "wo stack install returned non-zero"; fi
+if retry 2 wo_stack --redis; then ok "Redis stack installed"; else note_warn "wo stack install --redis returned non-zero"; fi
 # Judge by what is actually ON the box, not by exit codes. Without nginx, PHP-FPM
 # and MariaDB no site can ever be deployed here, so that is fatal — never "Ready
 # with warnings". (Redis stays a warning: sites work without an object cache.)
@@ -224,7 +262,7 @@ command -v nginx >/dev/null 2>&1 || missing_stack+=("nginx")
 ls /etc/php/*/fpm/php.ini >/dev/null 2>&1 || missing_stack+=("php-fpm")
 { command -v mariadb >/dev/null 2>&1 || command -v mysql >/dev/null 2>&1; } || missing_stack+=("mariadb")
 if [ "${#missing_stack[@]}" -gt 0 ]; then
-  die "WordOps stack is incomplete — missing: ${missing_stack[*]}. No site can be deployed on this server."
+  die "WordOps stack is incomplete — missing: ${missing_stack[*]}. No site can be deployed on this server. See the wordops.log lines above (tail /var/log/wo/wordops.log), fix the cause, and re-run this same command."
 fi
 ok "stack verified: nginx, php-fpm, mariadb"
 systemctl is-active --quiet redis-server && ok "redis-server active" || note_warn "redis-server is not active"
