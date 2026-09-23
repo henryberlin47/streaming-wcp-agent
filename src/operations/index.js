@@ -14,6 +14,9 @@ import { tunePhpNow, WWW_MODES, setSiteCron } from '../lib/site.js';
 import { runWww } from './www.js';
 import { checkCertPair } from '../lib/cert.js';
 import { logger } from '../lib/log.js';
+import { setEnv } from '../lib/envfile.js';
+import { pathExists } from '../lib/sys.js';
+import config from '../config.js';
 
 // ============================================================
 //  Operation registry
@@ -296,6 +299,29 @@ const cron = {
 };
 
 // ============================================================
+//  root — set SITE_ROOT_DOMAIN on a site deployed before it was recorded
+// ============================================================
+const root = {
+  name: 'root',
+  // params: { domain, root }
+  validate(p = {}) {
+    p = sanitize(p);
+    const errors = [];
+    reqDomain(errors, 'domain', p.domain);
+    reqDomain(errors, 'root', p.root);
+    return { ok: errors.length === 0, errors, clean: { domain: p.domain, root: p.root } };
+  },
+  async run(job, helpers, p) {
+    const { step, ok } = logger(helpers);
+    const env = `${config.wwwDir}/${p.domain}/htdocs/src/.env`;
+    step(`Root domain for ${p.domain}`);
+    if (!(await pathExists(env))) throw new Error(`${p.domain} is not deployed on this server (no ${env})`);
+    await setEnv(env, 'SITE_ROOT_DOMAIN', p.root);
+    ok(`SITE_ROOT_DOMAIN=${p.root}`);
+  },
+};
+
+// ============================================================
 //  www — a live site's WWW preference: nonwww | www | off
 // ============================================================
 const www = {
@@ -423,7 +449,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root };
 
 export function getOperation(type) {
   return operations[type] || null;

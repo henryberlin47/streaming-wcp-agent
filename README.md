@@ -69,7 +69,8 @@ its cron file is written as `/etc/cron.d/<name>.disabled` — cron ignores names
 with a dot, so the jobs exist but never run. SSL and brand/CDN registration are
 skipped (DNS points at the primary). `POST /api/op/cron { domain, active }`
 renames the file on/off and restarts cron; the portal's monitor does this by
-itself while the primary is down. `GET /api/sites` reports `backup` and `cron`
+itself, but only for a disaster (primary server AND site down). `POST
+/api/op/root { domain, root }` records `SITE_ROOT_DOMAIN` on an older site. `GET /api/sites` reports `backup` and `cron`
 (`on`|`off`) per site.
 
 ## Install
