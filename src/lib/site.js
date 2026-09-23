@@ -86,6 +86,32 @@ ${redirect}`;
   await fs.writeFile(`${confDir}/custom-cache.conf`, cacheBody);
 }
 
+// ---- Cron on/off (backup sites) ---------------------------------------------
+// A site's cron file is /etc/cron.d/<domain with _>. cron ignores any file in
+// cron.d whose name has a dot, so "<name>.disabled" is the same file, inert.
+// A BACKUP site (the same domain deployed again on another server, same shared
+// DB) is written disabled and only switched on when the primary is down —
+// two servers running the writers at once would double-post.
+const CRON_DIR = process.env.AGENT_CRON_DIR || '/etc/cron.d'; // env: tests only
+export const cronPath = (domain) => `${CRON_DIR}/${domain.replace(/\./g, '_')}`;
+export async function siteCron(domain) {
+  if (await pathExists(cronPath(domain))) return 'on';
+  if (await pathExists(`${cronPath(domain)}.disabled`)) return 'off';
+  return null; // no cron file at all
+}
+// Returns the state after the call; throws if the site has no cron file.
+export async function setSiteCron(helpers, domain, active) {
+  const on = cronPath(domain), off = `${on}.disabled`;
+  const cur = await siteCron(domain);
+  if (!cur) throw new Error(`${domain} has no cron file on this server (not deployed here?)`);
+  const want = active ? 'on' : 'off';
+  if (cur !== want) {
+    await fs.rename(active ? off : on, active ? on : off);
+    await systemctl(helpers, 'restart', 'cron');
+  }
+  return want;
+}
+
 // Write the MAIN site's 15-job cron file (football + basketball + feeds), each
 // flock-guarded and domain-scoped. Mirrors deploy-streaming-site.sh.
 export async function writeMainCron({ domain, cronFile, src }) {
@@ -206,7 +232,7 @@ export async function siteGit(domain) {
   return { branch, ...(repo && { repo }) };
 }
 
-// Returns per-site metadata { [domain]: { root?, role?, pair?, ssl?, ssl_expires?, www?, repo?, branch? } }:
+// Returns per-site metadata { [domain]: { root?, role?, pair?, ssl?, ssl_expires?, www?, repo?, branch?, cron?, backup? } }:
 //   root = SITE_ROOT_DOMAIN (the domain-map key its DB creds came from)
 //   role/pair = 'pc'|'mob' + the other half, so the portal can group them.
 // Domains with none of these are omitted.
@@ -218,7 +244,9 @@ export async function siteRoles(sites) {
     const env = `${config.wwwDir}/${d}/htdocs/src/.env`;
     const root = await readEnv(env, 'SITE_ROOT_DOMAIN');
     const www = await siteWww(d); // 'nonwww' | 'www' | 'off' (absent = no vhost)
-    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }), ...(await siteGit(d)) };
+    const cron = await siteCron(d); // 'on' | 'off' | null
+    const backup = (await readEnv(env, 'SITE_BACKUP')) === '1';
+    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }), ...(await siteGit(d)), ...(cron && { cron }), ...(backup && { backup }) };
     if ((await readEnv(env, 'SITE_ROLE')) === 'clone') { mobs.add(d); return; }
     const mob = await readEnv(env, 'SITE_MOBILE_HOST');
     if (mob && live.has(mob)) meta[d] = { ...meta[d], role: 'pc', pair: mob };

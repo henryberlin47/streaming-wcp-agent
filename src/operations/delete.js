@@ -6,6 +6,7 @@ import {
 } from '../lib/sys.js';
 import { logger } from '../lib/log.js';
 import { CERT_DIR } from '../lib/cert.js';
+import { cronPath } from '../lib/site.js';
 
 // ============================================================
 //  delete — native port of delete-streaming-site.sh
@@ -21,13 +22,14 @@ export async function runDelete(job, helpers, p, opts = {}) {
   const domain = p.domain;
 
   const SITE_DIR = `${config.wwwDir}/${domain}`;
-  const CRON_FILE = `/etc/cron.d/${domain.replace(/\./g, '_')}`;
+  const CRON_FILE = cronPath(domain);
   const NGINX_AVAILABLE = `/etc/nginx/sites-available/${domain}`;
   const NGINX_ENABLED = `/etc/nginx/sites-enabled/${domain}`;
 
   // 1) Remove the cron schedule FIRST so nothing new spawns mid-teardown.
   step('Remove cron schedule');
   await removePath(CRON_FILE);
+  await removePath(`${CRON_FILE}.disabled`); // a backup site's inert cron
   ok(`Removed ${CRON_FILE}`);
 
   // 2) Stop this domain's running cron processes (TERM, wait, then KILL).

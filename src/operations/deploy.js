@@ -8,7 +8,7 @@ import {
 } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeMainCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost, cronPath,
 } from '../lib/site.js';
 import { resolveFromMap } from '../lib/map.js';
 import { brandAdd, brandDelete, cdnAdd, cdnDelete } from '../lib/api.js';
@@ -41,7 +41,10 @@ export async function runDeploy(job, helpers, p) {
   const SRC = `${HTDOCS}/src`;
   const WEBROOT = `${SRC}/web`;
   const ENV_FILE = `${SRC}/.env`;
-  const CRON_FILE = `/etc/cron.d/${domain.replace(/\./g, '_')}`;
+  // A backup deploy is the same site again (same DB, same code) with its cron
+  // written INERT — cron ignores names with a dot — until the primary is down.
+  const isBackup = !!p.backup;
+  const CRON_FILE = isBackup ? `${cronPath(domain)}.disabled` : cronPath(domain);
   const CDN_DOMAIN = `cdn.${domain}`;
 
   if (deleteDomain && deleteDomain === domain) {
@@ -113,6 +116,7 @@ export async function runDeploy(job, helpers, p) {
   await setWpSiteUrl(ENV_FILE);
   await setEnv(ENV_FILE, 'ADVMO_DOS_DOMAIN', `https://${CDN_DOMAIN}/`);
   await setEnv(ENV_FILE, 'SITE_ROLE', 'main');
+  if (isBackup) await setEnv(ENV_FILE, 'SITE_BACKUP', '1');
   ok(`.env written (DB ${creds.DB_USER}@${creds.DB_HOST}, CDN_PREFIX=${CDN_PREFIX || 'none'})`);
 
   // 7) WordPress salts.
@@ -129,9 +133,10 @@ export async function runDeploy(job, helpers, p) {
   step('Write nginx vhost + cron');
   await writeNginxVhost({ domain, siteDir: SITE_DIR, webroot: WEBROOT, www });
   info(`www: ${www === 'off' ? 'not served' : `served, redirects to ${canonicalHost(domain, www)}`}`);
+  await fs.rm(isBackup ? cronPath(domain) : `${cronPath(domain)}.disabled`, { force: true }); // never both forms at once
   await writeMainCron({ domain, cronFile: CRON_FILE, src: SRC });
   await finalizeCronPerms(helpers, CRON_FILE);
-  ok(`nginx vhost + ${CRON_FILE} (15 jobs)`);
+  ok(`nginx vhost + ${CRON_FILE} (15 jobs${isBackup ? ', INACTIVE — backup site' : ''})`);
 
   // 9) Permissions.
   step('Apply ownership and permissions');
@@ -155,10 +160,13 @@ export async function runDeploy(job, helpers, p) {
   const cache = await clearWpCaches(helpers, SRC, WEBROOT);
   ok(`rocket ${cache.rocketOk ? 'cleared' : 'skipped'}, object ${cache.objectFlushed ? 'flushed' : 'skipped'}`);
 
-  // 12) SSL.
+  // 12) SSL. A backup's DNS points at the primary, so Let's Encrypt cannot
+  //     validate here — skipped; issue it when the backup goes live.
   step('Issue SSL certificate');
   let sslOk = false;
-  if (await woSiteSsl(helpers, domain, www)) {
+  if (isBackup) {
+    skip("backup site — DNS points at the primary, so Let's Encrypt would fail; use Re-issue SSL after switching DNS");
+  } else if (await woSiteSsl(helpers, domain, www)) {
     sslOk = true;
     if (await nginxTest(helpers)) await nginxReload(helpers);
     ok(`SSL installed for ${domain}`);
@@ -198,8 +206,10 @@ export async function runDeploy(job, helpers, p) {
     }
   }
 
-  // 14) Register new brand + CDN; unregister old if rotated.
+  // 14) Register new brand + CDN; unregister old if rotated. (A backup is the
+  //     same brand + CDN the primary already registered.)
   step('Register brand + CDN');
+  if (isBackup) { skip('backup site — already registered by the primary'); log(`Backup deploy completed: ${domain} (cron inactive)`); return; }
   logApi(helpers, `brand add ${domain}`, await brandAdd(domain));
   if (deleteDomain && deletedOld) {
     logApi(helpers, `brand delete ${deleteDomain}`, await brandDelete(deleteDomain));

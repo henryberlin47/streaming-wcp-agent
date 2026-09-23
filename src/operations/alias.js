@@ -4,7 +4,7 @@ import { runOrThrow, pathExists, woSiteExists, clearWpCaches, systemctl, nginxTe
 import { injectEnv, readEnv, setEnv, setWpSiteUrl } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeAliasCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost, cronPath,
 } from '../lib/site.js';
 import { brandAdd, cdnAdd } from '../lib/api.js';
 import { APP_REPO_DEFAULT, BRANCH_DEFAULT } from '../lib/siteConfig.js';
@@ -32,7 +32,8 @@ export async function runAlias(job, helpers, p, opts = {}) {
   const SRC = `${HTDOCS}/src`;
   const WEBROOT = `${SRC}/web`;
   const ENV_FILE = `${SRC}/.env`;
-  const CRON_FILE = `/etc/cron.d/${domain.replace(/\./g, '_')}`;
+  const isBackup = !!p.backup; // see deploy.js — same site, cron inert until needed
+  const CRON_FILE = isBackup ? `${cronPath(domain)}.disabled` : cronPath(domain);
   const CDN_DOMAIN = `cdn.${domain}`;
 
   const MAIN_SITE_DIR = `${config.wwwDir}/${mainDomain}`;
@@ -84,6 +85,7 @@ export async function runAlias(job, helpers, p, opts = {}) {
   await setWpSiteUrl(ENV_FILE);
   await setEnv(ENV_FILE, 'ADVMO_DOS_DOMAIN', `https://${CDN_DOMAIN}/`);
   await setEnv(ENV_FILE, 'SITE_ROLE', 'clone');
+  if (isBackup) await setEnv(ENV_FILE, 'SITE_BACKUP', '1');
   ok('WP_HOME, WP_SITEURL, ADVMO_DOS_DOMAIN, SITE_ROLE updated');
   info('SITE_CANONICAL_HOST, SITE_MOBILE_HOST, CDN_PREFIX, DB, Spaces, Telegram, salts inherited from main');
 
@@ -91,9 +93,10 @@ export async function runAlias(job, helpers, p, opts = {}) {
   step('Write nginx vhost + cron');
   await writeNginxVhost({ domain, siteDir: SITE_DIR, webroot: WEBROOT, www });
   ok('Nginx config written');
+  await fs.rm(isBackup ? cronPath(domain) : `${cronPath(domain)}.disabled`, { force: true });
   await writeAliasCron({ domain, cronFile: CRON_FILE, src: SRC });
   await finalizeCronPerms(helpers, CRON_FILE);
-  ok(`Cron file written: ${CRON_FILE} (4 jobs)`);
+  ok(`Cron file written: ${CRON_FILE} (4 jobs${isBackup ? ', INACTIVE — backup site' : ''})`);
 
   // 8) Permissions.
   step('Apply ownership and permissions');
@@ -121,7 +124,9 @@ export async function runAlias(job, helpers, p, opts = {}) {
   // 11) SSL.
   step('Issue SSL certificate');
   let sslOk = false;
-  if (await woSiteSsl(helpers, domain, www)) {
+  if (isBackup) {
+    info("backup site — DNS points at the primary, so Let's Encrypt would fail; use Re-issue SSL after switching DNS");
+  } else if (await woSiteSsl(helpers, domain, www)) {
     sslOk = true;
     if (await nginxTest(helpers)) await nginxReload(helpers);
     ok('SSL installed');
@@ -129,8 +134,9 @@ export async function runAlias(job, helpers, p, opts = {}) {
     warn('SSL installation failed (DNS/propagation?) — run `wo site update ' + domain + ' --le --force` later');
   }
 
-  // 12) Register brand + CDN (best-effort).
+  // 12) Register brand + CDN (best-effort). A backup: already done by the primary.
   step('Register brand + CDN');
+  if (isBackup) { info('backup site — already registered by the primary'); log(`Backup alias deploy completed: ${domain} (cron inactive)`); return; }
   const b = await brandAdd(domain);
   logApi(helpers, `brand add ${domain}`, b);
   if (CDN_PREFIX) {

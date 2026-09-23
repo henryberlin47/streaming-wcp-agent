@@ -10,7 +10,7 @@ import { runMigrate } from './migrate.js';
 import { runSelfUpdate } from './selfupdate.js';
 import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
-import { tunePhpNow, WWW_MODES } from '../lib/site.js';
+import { tunePhpNow, WWW_MODES, setSiteCron } from '../lib/site.js';
 import { runWww } from './www.js';
 import { checkCertPair } from '../lib/cert.js';
 import { logger } from '../lib/log.js';
@@ -123,6 +123,7 @@ const deploy = {
       repo: p.repo || null,
       cleanup: !!p.cleanup, // rewrite cloned old->new URLs during rotation
       force: !!p.force,     // replace an already-deployed site (its htdocs is kept as .bak)
+      backup: !!p.backup,   // standby copy: same DB + code, cron inert until the primary is down
     };
     return { ok: errors.length === 0, errors, clean };
   },
@@ -197,6 +198,7 @@ const alias = {
       branch: p.branch || null,
       repo: p.repo || null,
       force: !!p.force, // replace an already-deployed alias (its htdocs is kept as .bak)
+      backup: !!p.backup,
     };
     return { ok: errors.length === 0, errors, clean };
   },
@@ -269,6 +271,27 @@ const ssl = {
   },
   async run(job, helpers, p) {
     await runSsl(job, helpers, p);
+  },
+};
+
+// ============================================================
+//  cron — switch a site's cron on/off (backup sites: on only while the primary is down)
+// ============================================================
+const cron = {
+  name: 'cron',
+  // params: { domain, active: boolean }
+  validate(p = {}) {
+    p = sanitize(p);
+    const errors = [];
+    reqDomain(errors, 'domain', p.domain);
+    if (typeof p.active !== 'boolean') errors.push('active must be true or false');
+    return { ok: errors.length === 0, errors, clean: { domain: p.domain, active: p.active } };
+  },
+  async run(job, helpers, p) {
+    const { step, ok } = logger(helpers);
+    step(`Cron for ${p.domain}: ${p.active ? 'ON' : 'OFF'}`);
+    const state = await setSiteCron(helpers, p.domain, p.active);
+    ok(`cron is ${state} for ${p.domain}`);
   },
 };
 
@@ -400,7 +423,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron };
 
 export function getOperation(type) {
   return operations[type] || null;

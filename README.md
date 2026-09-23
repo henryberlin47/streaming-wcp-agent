@@ -61,6 +61,17 @@ so the two never fight, and caches are purged when the host changes. Switching t
 back from the vhost, so `GET /api/sites` reports `www` for every site; a vhost
 written before this feature reads as `nonwww`, which is what it did.
 
+### Backup sites + cron on/off
+
+A **backup** is the same site deployed again on another server (`deploy`/`alias`
+with `backup: true`): same shared DB, same code, `.env` gets `SITE_BACKUP=1`, and
+its cron file is written as `/etc/cron.d/<name>.disabled` — cron ignores names
+with a dot, so the jobs exist but never run. SSL and brand/CDN registration are
+skipped (DNS points at the primary). `POST /api/op/cron { domain, active }`
+renames the file on/off and restarts cron; the portal's monitor does this by
+itself while the primary is down. `GET /api/sites` reports `backup` and `cron`
+(`on`|`off`) per site.
+
 ## Install
 
 **Full fresh-VPS walkthrough — including WordOps, Redis, Node, and Tailscale — is
