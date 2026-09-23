@@ -43,8 +43,24 @@ app.use(express.json({ limit: '64kb' }));
 
 // --- health (unauthenticated, minimal) --------------------------------------
 // Useful for the panel to see the server is up before auth. Reveals nothing.
+// The server's PUBLIC IPv4 (what DNS points at), as seen from outside — the
+// portal only knows the tailnet address it talks to. Looked up once at start,
+// refreshed every 6h; never blocks a request (healthz answers with what it has).
+let PUBLIC_IP = null;
+async function refreshPublicIp() {
+  for (const url of ['https://api.ipify.org', 'https://ipv4.icanhazip.com']) {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const ip = (await r.text()).trim();
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { PUBLIC_IP = ip; return; }
+    } catch { /* try the next one */ }
+  }
+}
+refreshPublicIp();
+setInterval(refreshPublicIp, 6 * 3600 * 1000).unref();
+
 app.get('/healthz', (req, res) => {
-  res.json({ ok: true, server: config.serverName, version: VERSION, time: Date.now() });
+  res.json({ ok: true, server: config.serverName, version: VERSION, public_ip: PUBLIC_IP, time: Date.now() });
 });
 
 // Everything below requires auth + passes the IP allowlist.
