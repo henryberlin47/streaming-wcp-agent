@@ -198,3 +198,11 @@ Values only ever reach array-arg `spawn` calls (never a shell) and a quote-safe
   nginx/php-fpm/DB races). Raise only if operations are known-independent.
 - Secrets in job params (matching `pass|secret|token|key`) are redacted in job
   views and logs of params.
+## Rotating the deploy secrets
+
+The five deploy secrets (`ADVMO_DOS_KEY`, `ADVMO_DOS_SECRET`, `TELEGRAM_BOT_TOKEN`,
+`SEO_MONITOR_TOKEN`, `CDN_API_KEY`) live in this portal's `.env` and reach a
+server only at bootstrap. To rotate: change them here, restart the portal, then
+Servers → **Push secrets (all)** (or per server: ⋯ → Push secrets). Each agent
+writes them into its own `.env` and into every deployed site's `.env`, then
+restarts itself. Values are never stored in the operation record.

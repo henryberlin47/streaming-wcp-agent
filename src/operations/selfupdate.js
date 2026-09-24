@@ -14,19 +14,33 @@ import { listJobs } from '../jobs.js';
 // ============================================================
 
 // The agent's own checkout (bootstrap installs by `git clone`), wherever it is.
-const INSTALL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+export const INSTALL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SERVICE = process.env.AGENT_SERVICE_NAME || 'streaming-agent';
 const RESTART_DELAY_S = 5;
 const TERMINAL = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
 
-export async function runSelfUpdate(job, helpers) {
-  const { log, step, info, ok } = logger(helpers);
-
-  // The restart drops every other in-memory job. Refuse rather than lose work.
+// The restart drops every other in-memory job. Refuse rather than lose work.
+export function requireEmptyQueue(job) {
   const others = listJobs().filter((j) => j.id !== job.id && !TERMINAL.has(j.state));
   if (others.length) {
     throw new Error(`${others.length} other job(s) queued or running — the restart would drop them. Retry when the queue is empty.`);
   }
+}
+
+// Restart this agent a few seconds from now, from OUTSIDE this process.
+export async function scheduleRestart(helpers) {
+  let r = await run(helpers, 'systemd-run', ['--quiet', `--on-active=${RESTART_DELAY_S}`, 'systemctl', 'restart', SERVICE], { quiet: true });
+  if (r.code !== 0) {
+    // No systemd-run (unusual): detach a sleeper so the restart still outlives this process.
+    r = await run(helpers, 'bash', ['-c', `setsid nohup sh -c 'sleep ${RESTART_DELAY_S}; systemctl restart ${SERVICE}' >/dev/null 2>&1 &`], { quiet: true });
+    if (r.code !== 0) throw new Error(`could not schedule the restart — run: systemctl restart ${SERVICE}`);
+  }
+  return `${SERVICE} restarts in ~${RESTART_DELAY_S}s`;
+}
+
+export async function runSelfUpdate(job, helpers) {
+  const { log, step, info, ok } = logger(helpers);
+  requireEmptyQueue(job);
 
   step(`Check install (${INSTALL_DIR})`);
   if (!(await pathExists(`${INSTALL_DIR}/.git`))) {
@@ -53,13 +67,7 @@ export async function runSelfUpdate(job, helpers) {
   ok('dependencies installed');
 
   step(`Schedule restart of ${SERVICE}`);
-  let r = await run(helpers, 'systemd-run', ['--quiet', `--on-active=${RESTART_DELAY_S}`, 'systemctl', 'restart', SERVICE], { quiet: true });
-  if (r.code !== 0) {
-    // No systemd-run (unusual): detach a sleeper so the restart still outlives this process.
-    r = await run(helpers, 'bash', ['-c', `setsid nohup sh -c 'sleep ${RESTART_DELAY_S}; systemctl restart ${SERVICE}' >/dev/null 2>&1 &`], { quiet: true });
-    if (r.code !== 0) throw new Error(`could not schedule the restart — run: systemctl restart ${SERVICE}`);
-  }
-  ok(`${SERVICE} restarts in ~${RESTART_DELAY_S}s; the portal re-pings to confirm the new version`);
+  ok(`${await scheduleRestart(helpers)}; the portal re-pings to confirm the new version`);
 
   log(`Agent update complete: ${after}`);
   return { before, after };

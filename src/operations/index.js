@@ -12,6 +12,7 @@ import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
 import { tunePhpNow, WWW_MODES, setSiteCron } from '../lib/site.js';
 import { runWww } from './www.js';
+import { runSecrets, SECRET_KEYS } from './secrets.js';
 import { checkCertPair } from '../lib/cert.js';
 import { logger } from '../lib/log.js';
 import { setEnv } from '../lib/envfile.js';
@@ -385,6 +386,28 @@ const tunephp = {
 };
 
 // ============================================================
+//  secrets — rotate deploy secrets: { ADVMO_DOS_KEY?, …, sites?: boolean }
+// ============================================================
+const secrets = {
+  name: 'secrets',
+  validate(p = {}) {
+    const errors = [];
+    const clean = { sites: p.sites !== false };
+    let n = 0;
+    for (const k of SECRET_KEYS) {
+      if (p[k] == null || p[k] === '') continue;
+      if (typeof p[k] !== 'string' || p[k].length > 500 || /[\r\n]/.test(p[k])) { errors.push(`${k} must be a single-line string`); continue; }
+      clean[k] = p[k]; n++;
+    }
+    if (!n) errors.push(`give at least one of: ${SECRET_KEYS.join(', ')}`);
+    return { ok: errors.length === 0, errors, clean };
+  },
+  async run(job, helpers, p) {
+    await runSecrets(job, helpers, p);
+  },
+};
+
+// ============================================================
 //  selfupdate — git pull this agent + restart it (no params)
 // ============================================================
 const selfupdate = {
@@ -449,7 +472,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets };
 
 export function getOperation(type) {
   return operations[type] || null;
