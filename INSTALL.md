@@ -22,7 +22,7 @@ new server**, give it a name, and run the printed one-liner as root on a fresh
 Ubuntu 22.04/24.04 VPS:
 
 ```bash
-curl -fsSL https://<portal>/api/bootstrap/<id>/<key> | sudo bash
+curl -4 -fsSL https://<portal>/api/bootstrap/<id>/<key> | sudo bash
 ```
 
 That URL serves a small wrapper holding this server's config (agent token,
@@ -33,6 +33,10 @@ PHP-FPM, Node LTS, Tailscale, the agent under systemd, the firewall rule, and a
 root deploy key — then **reports its tailnet IP back to the portal**, which fills
 in the server's address and pings it. The only manual step left is adding the
 printed deploy key to GitHub for the private app + map repos.
+
+The bootstrap is **IPv4-only** for every download and lookup (gai.conf, apt, curl,
+wget, node, ssh) — cloud VMs often come with an IPv6 address but no working
+IPv6 route, which otherwise makes apt/Launchpad/npm hang or fail.
 
 The key in the URL is one-time and expires in 2 hours; the script is idempotent,
 so a half-finished run can simply be re-run. Part 1 remains the reference for
@@ -84,7 +88,7 @@ Redis flag (`wo site create … --wp --wpredis`) or the server sits idle.
 ### 3. Node.js LTS (system-wide → `/usr/bin/node`)
 
 ```bash
-curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs
+curl -4 -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs
 ```
 ```bash
 node --version && which node      # must print /usr/bin/node — what the systemd unit runs
@@ -100,7 +104,7 @@ sudo apt-get update && sudo apt-get install -y git sed
 ### 5. Tailscale
 
 ```bash
-curl -fsSL https://tailscale.com/install.sh | sh
+curl -4 -fsSL https://tailscale.com/install.sh | sh
 ```
 ```bash
 sudo tailscale up

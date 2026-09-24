@@ -10,7 +10,7 @@
 #  Not meant to be run by hand. The portal's "Provision new server" prints a
 #  one-liner that exports this server's config and pipes this file into bash:
 #
-#      curl -fsSL https://<portal>/api/bootstrap/<id>/<key> | sudo bash
+#      curl -4 -fsSL https://<portal>/api/bootstrap/<id>/<key> | sudo bash
 #
 #  Config arrives as environment variables (never as arguments, never in this
 #  file). Required: AGENT_TOKEN AGENT_SERVER_NAME AGENT_ALLOWED_IPS
@@ -134,7 +134,7 @@ post_report() {  # $1 = status
   local payload
   payload="{\"status\":\"$(json_str "$1")\",\"tailscale_ip\":\"$(json_str "$TS_IP")\",\"agent_port\":${AGENT_PORT},\"hostname\":\"$(json_str "$(hostname)")\",\"agent_version\":\"$(json_str "$AGENT_VERSION")\",\"ssh_pubkey\":\"$(json_str "$PUBKEY")\",\"warnings\":[${w}]}"
   if [ -z "${BOOTSTRAP_REPORT_URL:-}" ]; then return 1; fi
-  curl -fsS -m 20 -X POST -H 'Content-Type: application/json' -d "$payload" "$BOOTSTRAP_REPORT_URL" >/dev/null 2>&1
+  curl -4 -fsS -m 20 -X POST -H 'Content-Type: application/json' -d "$payload" "$BOOTSTRAP_REPORT_URL" >/dev/null 2>&1
 }
 report_failure() { post_report "failed: $1" || true; }
 
@@ -144,7 +144,7 @@ report_failure() { post_report "failed: $1" || true; }
 post_progress() {  # $1 = step no, $2 = label
   [ -n "${BOOTSTRAP_REPORT_URL:-}" ] || return 0
   local payload="{\"status\":\"progress\",\"step\":$1,\"total\":$STEP_TOTAL,\"label\":\"$(json_str "$2")\"}"
-  ( curl -fsS -m 8 -X POST -H 'Content-Type: application/json' -d "$payload" "$BOOTSTRAP_REPORT_URL" >/dev/null 2>&1 & )
+  ( curl -4 -fsS -m 8 -X POST -H 'Content-Type: application/json' -d "$payload" "$BOOTSTRAP_REPORT_URL" >/dev/null 2>&1 & )
 }
 
 # ============================================================
@@ -189,10 +189,32 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 ok "all required config present"
 for c in curl wget git; do
-  command -v "$c" >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq "$c" >/dev/null; }
+  command -v "$c" >/dev/null 2>&1 || { apt-get -o Acquire::ForceIPv4=true update -qq && apt-get -o Acquire::ForceIPv4=true install -y -qq "$c" >/dev/null; }
   command -v "$c" >/dev/null 2>&1 && ok "$c present" || die "cannot install $c"
 done
 export DEBIAN_FRONTEND=noninteractive
+
+# IPv4 ONLY, for everything, unconditionally. Cloud VMs routinely get an IPv6
+# address with no working route; then anything that tries IPv6 first (apt,
+# Launchpad via Python, npm, git, curl inside the NodeSource/Tailscale
+# installers) hangs or fails. Cover every resolver in one go:
+#   gai.conf   getaddrinfo() sorts IPv4 first — Python, git, ssh, node, wget…
+#   apt        ForceIPv4
+#   curl/wget  rc files in root's HOME (also caught by the piped installers)
+#   node/npm   --dns-result-order=ipv4first for this session
+#   ssh        AddressFamily inet (git over ssh)
+force_ipv4() {
+  grep -qE '^precedence ::ffff:0:0/96[[:space:]]+100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
+  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+  grep -qs '^--ipv4' "$HOME/.curlrc" 2>/dev/null || echo '--ipv4' >> "$HOME/.curlrc"
+  grep -qs '^inet4_only' "$HOME/.wgetrc" 2>/dev/null || echo 'inet4_only = on' >> "$HOME/.wgetrc"
+  export NODE_OPTIONS="--dns-result-order=ipv4first${NODE_OPTIONS:+ $NODE_OPTIONS}"
+  mkdir -p /root/.ssh && chmod 700 /root/.ssh
+  grep -qs '^AddressFamily inet' /root/.ssh/config 2>/dev/null || printf 'AddressFamily inet\n' >> /root/.ssh/config
+  chmod 600 /root/.ssh/config
+  ok "IPv4 only: gai.conf, apt, curl, wget, node, ssh"
+}
+force_ipv4
 
 # ============================================================
 step "Installing WordOps"
@@ -204,7 +226,7 @@ if command -v wo >/dev/null 2>&1; then
   ok "WordOps already installed — skipping the installer"
 else
   info "Downloading installer (wops.cc)…"
-  if wget -qO /tmp/wo-install wops.cc && bash /tmp/wo-install; then ok "WordOps installed"; else rm -f /tmp/wo-install; die "WordOps install failed"; fi
+  if wget -4 -qO /tmp/wo-install wops.cc && bash /tmp/wo-install; then ok "WordOps installed"; else rm -f /tmp/wo-install; die "WordOps install failed"; fi
   rm -f /tmp/wo-install
 fi
 command -v wo >/dev/null 2>&1 || export PATH="$PATH:/usr/local/bin"
@@ -234,22 +256,12 @@ wo_stack() {
   [ -f /var/log/wo/wordops.log ] && { echo "       --- /var/log/wo/wordops.log ---" >&2; grep -vE '^\s*$' /var/log/wo/wordops.log | tail -n 25 | sed 's/^/       /' >&2; }
   return 1
 }
-# WordOps adds its PHP and nginx repositories as Launchpad PPAs, and
-# add-apt-repository must reach api.launchpad.net to do so. A cloud VM that has
-# an IPv6 address but no working IPv6 route fails exactly there (Python tries
-# IPv6 first), and `wo` then dies with "Unable to locate package php8.x-…".
-# If Launchpad answers over IPv4 but not IPv6, prefer IPv4 system-wide.
-prefer_ipv4_if_needed() {
-  curl -6 -sS -m 8 -o /dev/null https://api.launchpad.net/ 2>/dev/null && return 0
-  if ! curl -4 -sS -m 8 -o /dev/null https://api.launchpad.net/ 2>/dev/null; then
-    note_warn "api.launchpad.net is unreachable over IPv4 and IPv6 — the PHP/nginx PPAs cannot be added from this network"
-    return 1
-  fi
-  grep -qE '^precedence ::ffff:0:0/96[[:space:]]+100' /etc/gai.conf 2>/dev/null || echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf
-  echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
-  ok "Launchpad reachable over IPv4 only — IPv4 preferred (gai.conf + apt) so PPAs can be added"
-}
-prefer_ipv4_if_needed
+# WordOps adds its PHP and nginx repositories as Launchpad PPAs; the whole
+# stack install fails ("Unable to locate package php8.x-…") if Launchpad can't
+# be reached. Everything is IPv4-only already (force_ipv4 in preflight); this
+# just says so early if the network blocks it.
+curl -4 -sS -m 8 -o /dev/null https://api.launchpad.net/ 2>/dev/null \
+  || note_warn "api.launchpad.net is unreachable over IPv4 — the PHP/nginx PPAs cannot be added from this network"
 wait_for_apt
 try apt-get update -qq || note_warn "apt-get update returned non-zero"
 if retry 3 wo_stack; then ok "base stack installed"; else note_warn "wo stack install returned non-zero"; fi
@@ -349,7 +361,7 @@ if [ $need_node = 0 ] && ! command -v npm >/dev/null 2>&1; then
   fi
 fi
 if [ $need_node = 1 ]; then
-  if retry 2 bash -c 'curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -' && retry 2 apt-get install -y -qq nodejs; then
+  if retry 2 bash -c 'curl -4 -fsSL https://deb.nodesource.com/setup_lts.x | bash -' && retry 2 apt-get install -y -qq nodejs; then
     ok "node $(node -v) installed"
   else die "Node.js install failed"; fi
 fi
@@ -365,7 +377,7 @@ retry 2 apt-get install -y -qq git sed ufw && ok "git, sed, ufw present" || note
 # ============================================================
 step "Joining the Tailscale tailnet"
 if ! command -v tailscale >/dev/null 2>&1; then
-  retry 2 bash -c 'curl -fsSL https://tailscale.com/install.sh | sh' && ok "tailscale installed" || die "Tailscale install failed"
+  retry 2 bash -c 'curl -4 -fsSL https://tailscale.com/install.sh | sh' && ok "tailscale installed" || die "Tailscale install failed"
 else ok "tailscale already installed"; fi
 if [ -n "${TS_AUTHKEY:-}" ]; then
   tailscale up --auth-key="$TS_AUTHKEY" --hostname="$(echo "$AGENT_SERVER_NAME" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | tr -cd 'a-z0-9-')" >/dev/null 2>&1 \
@@ -432,7 +444,7 @@ systemctl restart streaming-agent
 sleep 2
 if systemctl is-active --quiet streaming-agent; then
   ok "streaming-agent active"
-  if curl -fsS -m 5 "http://127.0.0.1:$AGENT_PORT/healthz" >/dev/null 2>&1; then ok "healthz responds on :$AGENT_PORT"; else note_warn "agent is active but /healthz did not answer on 127.0.0.1:$AGENT_PORT"; fi
+  if curl -4 -fsS -m 5 "http://127.0.0.1:$AGENT_PORT/healthz" >/dev/null 2>&1; then ok "healthz responds on :$AGENT_PORT"; else note_warn "agent is active but /healthz did not answer on 127.0.0.1:$AGENT_PORT"; fi
 else
   journalctl -u streaming-agent -n 15 --no-pager 2>/dev/null | sed 's/^/     /' >&2
   die "streaming-agent failed to start (see journal above)"
@@ -449,7 +461,7 @@ if [ ! -f /root/.ssh/id_ed25519 ]; then
   ssh-keygen -t ed25519 -N '' -q -f /root/.ssh/id_ed25519 -C "streaming-agent@$(hostname)" && ok "generated /root/.ssh/id_ed25519" || note_warn "ssh-keygen failed"
 else ok "deploy key already exists"; fi
 if ! grep -q "^github.com" /root/.ssh/known_hosts 2>/dev/null; then
-  ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null && ok "github.com added to known_hosts" || note_warn "ssh-keyscan github.com failed"
+  ssh-keyscan -4 -t ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null && ok "github.com added to known_hosts" || note_warn "ssh-keyscan github.com failed"
 fi
 PUBKEY="$(cat /root/.ssh/id_ed25519.pub 2>/dev/null || true)"
 
