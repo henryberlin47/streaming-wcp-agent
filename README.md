@@ -73,6 +73,15 @@ itself, but only for a disaster (primary server AND site down). `POST
 /api/op/root { domain, root }` records `SITE_ROOT_DOMAIN` on an older site. `GET /api/sites` reports `backup` and `cron`
 (`on`|`off`) per site.
 
+### WordPress users
+
+`POST /api/wp/users { domain }` lists a site's users (wp-cli, read-only).
+`POST /api/wp/users/reset { domain, login }` generates a 32-character random
+password on the server, sets it through `scripts/wp-set-password.php` with the
+value on **stdin** (never in argv), ends that user's sessions, and returns the
+password once. Both are answered directly rather than queued as jobs, so the
+password never reaches a job log.
+
 ## Install
 
 **Full fresh-VPS walkthrough — including WordOps, Redis, Node, and Tailscale — is

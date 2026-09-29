@@ -11,6 +11,8 @@ import { woSiteList } from './lib/sys.js';
 import { siteRoles } from './lib/site.js';
 import { enforceAdminPanelCert } from './lib/panelcert.js';
 import { cloneMap, readMapJson } from './lib/map.js';
+import { listWpUsers, resetWpPassword } from './lib/wpusers.js';
+import { normDomain } from './operations/index.js';
 
 // Version string the portal displays: package version + git short sha when
 // this is a checkout (bootstrap installs by `git clone`), so a self-update
@@ -113,6 +115,22 @@ app.get('/api/map', async (req, res) => {
     if (m) await m.dispose();
   }
 });
+
+// --- WordPress users --------------------------------------------------------
+// POST /api/wp/users        { domain }         -> { users: [...] }
+// POST /api/wp/users/reset  { domain, login }  -> { id, login, password }  (password shown ONCE)
+// Answered directly, never queued: job logs are stored by the portal, and a new
+// password must not be in one. Nothing here is logged.
+const WP_DOMAIN_RE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
+const wpRoute = (fn) => async (req, res) => {
+  const domain = normDomain(req.body?.domain);
+  if (!WP_DOMAIN_RE.test(domain)) return res.status(400).json({ error: 'invalid_domain' });
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await fn(domain, req.body || {})); }
+  catch (e) { res.status(e?.status || 500).json({ error: 'wp_users_failed', message: e?.message || 'failed' }); }
+};
+app.post('/api/wp/users', wpRoute(async (domain) => ({ domain, users: await listWpUsers(domain) })));
+app.post('/api/wp/users/reset', wpRoute(async (domain, b) => ({ domain, ...(await resetWpPassword(domain, String(b.login || ''))) })));
 
 // --- start an operation -----------------------------------------------------
 // POST /api/op/:type   body = operation params
