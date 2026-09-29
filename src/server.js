@@ -11,7 +11,7 @@ import { woSiteList } from './lib/sys.js';
 import { siteRoles } from './lib/site.js';
 import { enforceAdminPanelCert } from './lib/panelcert.js';
 import { cloneMap, readMapJson } from './lib/map.js';
-import { listWpUsers, resetWpPassword } from './lib/wpusers.js';
+import { wpUsers } from './lib/wpusers.js';
 import { normDomain } from './operations/index.js';
 
 // Version string the portal displays: package version + git short sha when
@@ -117,8 +117,11 @@ app.get('/api/map', async (req, res) => {
 });
 
 // --- WordPress users --------------------------------------------------------
-// POST /api/wp/users        { domain }         -> { users: [...] }
-// POST /api/wp/users/reset  { domain, login }  -> { id, login, password }  (password shown ONCE)
+// POST /api/wp/users           { domain }                        -> { users, roles }
+// POST /api/wp/users/:action   { domain, … }   action = create | reset | set-role |
+//                              deactivate | activate | delete
+//   create {login,email,role} · reset/activate {id} -> include `password` (shown ONCE)
+//   set-role {id,role} · deactivate {id} · delete {id, reassign}
 // Answered directly, never queued: job logs are stored by the portal, and a new
 // password must not be in one. Nothing here is logged.
 const WP_DOMAIN_RE = /^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$/;
@@ -129,8 +132,8 @@ const wpRoute = (fn) => async (req, res) => {
   try { res.json(await fn(domain, req.body || {})); }
   catch (e) { res.status(e?.status || 500).json({ error: 'wp_users_failed', message: e?.message || 'failed' }); }
 };
-app.post('/api/wp/users', wpRoute(async (domain) => ({ domain, users: await listWpUsers(domain) })));
-app.post('/api/wp/users/reset', wpRoute(async (domain, b) => ({ domain, ...(await resetWpPassword(domain, String(b.login || ''))) })));
+app.post('/api/wp/users', wpRoute(async (domain) => ({ domain, ...(await wpUsers(domain, 'list')) })));
+app.post('/api/wp/users/:action', (req, res) => wpRoute(async (domain, b) => ({ domain, ...(await wpUsers(domain, req.params.action, b)) }))(req, res));
 
 // --- start an operation -----------------------------------------------------
 // POST /api/op/:type   body = operation params
