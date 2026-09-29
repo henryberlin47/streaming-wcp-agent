@@ -27,9 +27,21 @@ import { logger } from '../lib/log.js';
 
 const DUMP_DIR = process.env.DUMP_DIR || '/var/backups/db-migrations';
 
+// Collation/DEFINER normalisation for an import (shared with dbbackup's restore).
+export const SED_ARGS = [
+  '-e', 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g',
+  '-e', 's/utf8mb4_0900_as_ci/utf8mb4_unicode_ci/g',
+  '-e', 's/utf8mb4_0900_as_cs/utf8mb4_unicode_ci/g',
+  '-e', 's/utf8mb4_0900_bin/utf8mb4_bin/g',
+  '-e', 's/[[:space:]]DEFINER=`[^`]*`@`[^`]*`//g',
+];
+
 const normHost = (h) => String(h || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
+// A fast child can be gone before we get here (its output is awaited first), and
+// a 'close' that already fired would never resolve — so check before listening.
 const exitOf = (child) =>
   new Promise((resolve, reject) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve(child.exitCode ?? -1);
     child.once('error', reject);
     child.once('close', (code) => resolve(code ?? -1));
   });
@@ -225,13 +237,6 @@ export async function runMigrate(job, helpers, p, opts = {}) {
     // separate, constant-memory process) exactly like the shell script — NOT a
     // Node Transform, which buffered whole lines and froze the event loop on a
     // multi-MB --hex-blob row. LC_ALL=C makes sed byte-oriented (safe on UTF-8).
-    const SED_ARGS = [
-      '-e', 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g',
-      '-e', 's/utf8mb4_0900_as_ci/utf8mb4_unicode_ci/g',
-      '-e', 's/utf8mb4_0900_as_cs/utf8mb4_unicode_ci/g',
-      '-e', 's/utf8mb4_0900_bin/utf8mb4_bin/g',
-      '-e', 's/[[:space:]]DEFINER=`[^`]*`@`[^`]*`//g',
-    ];
     const spawnSed = (spawnK) => spawnK('sed', SED_ARGS, { env: { ...process.env, LC_ALL: 'C' } });
 
     // A stuck migration must be killable: the Kill button + job timeout fire

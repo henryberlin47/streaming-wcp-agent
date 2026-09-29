@@ -45,6 +45,9 @@ const config = {
   // it gets its own leash. Everything else stays on jobTimeoutMs.
   opTimeouts: {
     migrate: parseInt(process.env.AGENT_MIGRATE_TIMEOUT_MS || String(2 * 60 * 60 * 1000), 10),
+    // every database in the map, one after another
+    dbbackup: parseInt(process.env.AGENT_BACKUP_TIMEOUT_MS || String(6 * 60 * 60 * 1000), 10),
+    dbrestore: parseInt(process.env.AGENT_RESTORE_TIMEOUT_MS || String(3 * 60 * 60 * 1000), 10),
   },
 
   // Identify this server in responses (handy when the panel manages many).

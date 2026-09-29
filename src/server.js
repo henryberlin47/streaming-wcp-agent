@@ -12,6 +12,8 @@ import { siteRoles } from './lib/site.js';
 import { enforceAdminPanelCert } from './lib/panelcert.js';
 import { cloneMap, readMapJson } from './lib/map.js';
 import { wpUsers } from './lib/wpusers.js';
+import { listBackups, testStorage } from './operations/dbbackup.js';
+import { readS3Params } from './lib/s3.js';
 import { normDomain } from './operations/index.js';
 
 // Version string the portal displays: package version + git short sha when
@@ -134,6 +136,22 @@ const wpRoute = (fn) => async (req, res) => {
 };
 app.post('/api/wp/users', wpRoute(async (domain) => ({ domain, ...(await wpUsers(domain, 'list')) })));
 app.post('/api/wp/users/:action', (req, res) => wpRoute(async (domain, b) => ({ domain, ...(await wpUsers(domain, req.params.action, b)) }))(req, res));
+
+// --- backups: what is in the bucket, and do the credentials work ----------------
+// POST /api/backup/list  { s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix }
+//        -> { backups: [{ key, server, db, file, size, modified, safety }], databases: [{ server, db, roots }] }
+// POST /api/backup/test  (same body) -> { ok, objects }   — lists, writes and deletes a probe object
+// Read-only / harmless, so answered directly. Backups and restores are operations.
+const backupRoute = (fn) => async (req, res) => {
+  const errors = [];
+  const p = readS3Params(req.body || {}, errors);
+  if (errors.length) return res.status(400).json({ error: 'invalid_params', errors });
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await fn(p)); }
+  catch (e) { res.status(e?.status === 403 || e?.status === 404 ? 400 : 502).json({ error: 'spaces_failed', message: e?.message || 'failed' }); }
+};
+app.post('/api/backup/list', backupRoute(listBackups));
+app.post('/api/backup/test', backupRoute(testStorage));
 
 // --- start an operation -----------------------------------------------------
 // POST /api/op/:type   body = operation params

@@ -13,6 +13,8 @@ import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
 import { tunePhpNow, WWW_MODES, setSiteCron } from '../lib/site.js';
 import { runWww } from './www.js';
 import { runSecrets, SECRET_KEYS } from './secrets.js';
+import { runDbBackup, runDbRestore } from './dbbackup.js';
+import { readS3Params } from '../lib/s3.js';
 import { checkCertPair } from '../lib/cert.js';
 import { logger } from '../lib/log.js';
 import { setEnv } from '../lib/envfile.js';
@@ -386,6 +388,56 @@ const tunephp = {
 };
 
 // ============================================================
+//  dbbackup / dbrestore — database backups in DigitalOcean Spaces
+// ============================================================
+const intIn = (errors, name, v, max) => {
+  if (v == null || v === '') return 0;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > max) { errors.push(`${name} must be a whole number from 0 to ${max}`); return 0; }
+  return n;
+};
+const dbbackup = {
+  name: 'dbbackup',
+  // params: { s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix?, roots?: [domain], keepLast?, maxAgeDays? }
+  validate(p = {}) {
+    const errors = [];
+    const s3 = readS3Params(p, errors);
+    let roots = null;
+    if (p.roots != null) {
+      if (!Array.isArray(p.roots) || p.roots.length > 2000) errors.push('roots must be a list of root domains');
+      else {
+        roots = p.roots.map((r) => normDomain(r));
+        if (roots.some((r) => !isDomain(r))) errors.push('roots must all be valid domains');
+      }
+    }
+    const keepLast = intIn(errors, 'keepLast', p.keepLast, 1000);
+    const maxAgeDays = intIn(errors, 'maxAgeDays', p.maxAgeDays, 3650);
+    return { ok: errors.length === 0, errors, clean: { ...s3, roots: roots && roots.length ? roots : null, keepLast, maxAgeDays } };
+  },
+  async run(job, helpers, p) {
+    await runDbBackup(job, helpers, p);
+  },
+};
+const dbrestore = {
+  name: 'dbrestore',
+  // params: { s3…, prefix?, key, root, confirm: <target database name>, safety?: boolean }
+  validate(p = {}) {
+    const errors = [];
+    const s3 = readS3Params(p, errors);
+    const key = String(p.key || '');
+    if (!/^[A-Za-z0-9._\/-]{1,500}\.sql\.gz$/.test(key) || key.split('/').includes('..')) errors.push('key must be a backup object (….sql.gz)');
+    const root = normDomain(p.root);
+    reqDomain(errors, 'root', root);
+    const confirm = String(p.confirm || '');
+    if (!DB_NAME_RE.test(confirm)) errors.push('confirm must be the name of the database being overwritten');
+    return { ok: errors.length === 0, errors, clean: { ...s3, key, root, confirm, safety: p.safety !== false } };
+  },
+  async run(job, helpers, p) {
+    await runDbRestore(job, helpers, p);
+  },
+};
+
+// ============================================================
 //  secrets — rotate deploy secrets: { ADVMO_DOS_KEY?, …, sites?: boolean }
 // ============================================================
 const secrets = {
@@ -472,7 +524,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets, dbbackup, dbrestore };
 
 export function getOperation(type) {
   return operations[type] || null;
