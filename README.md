@@ -103,7 +103,9 @@ queued as jobs, so a password never reaches a job log.
 
 All take `s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix` (flat names, so the
 job view redacts the key and secret). Objects are stored as
-`<prefix>/<db-server>/<database>/<database>_<UTC stamp>.sql.gz`. S3 requests are
+`<prefix>/<db-server>/<database>/<kind>/<database>_<UTC stamp>.sql.gz`, where
+`kind` is `scheduled` (retention prunes these) or `manual` ("Back up now" and
+pre-restore safety copies — never deleted by the agent). S3 requests are
 signed with Signature V4 in `src/lib/s3.js` — no SDK; one object is capped at
 5 GB (single PUT). Dumps pass through `BACKUP_DIR` (default
 `/var/backups/db-backups`) and are removed after upload. Timeouts:

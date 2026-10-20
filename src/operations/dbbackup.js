@@ -22,7 +22,11 @@ import { SED_ARGS } from './migrate.js';
 //   backup   mysqldump | gzip -> a temp file -> Spaces, then retention
 //   restore  Spaces -> temp file -> (safety backup of the target) -> mysql
 //
-// Object layout:  <prefix><db-server>/<database>/<database>_<UTC stamp>.sql.gz
+// Object layout:  <prefix><db-server>/<database>/<kind>/<database>_<UTC stamp>.sql.gz
+//   kind = scheduled   made by the schedule — retention prunes these
+//   kind = manual      "Back up now" and pre-restore safety copies — NEVER deleted
+// (objects from before kinds existed sit directly under <database>/ and count
+// as scheduled, since retention has always applied to them.)
 // A failed database never stops the others; the job fails at the end if any did.
 // ============================================================
 const WORK_DIR = process.env.BACKUP_DIR || '/var/backups/db-backups';
@@ -77,12 +81,15 @@ export function pickExpired(objects, { keepLast = 0, maxAgeDays = 0, now = Date.
   ));
 }
 
-/** "<prefix><server>/<db>/<file>.sql.gz" -> { server, db, file } (null if it isn't one of ours). */
+export const KINDS = ['scheduled', 'manual'];
+/** "<prefix><server>/<db>/<kind>/<file>.sql.gz" -> { server, db, kind, file } (null if it isn't one of ours). */
 export function parseKey(key, prefix = '') {
   if (!key.startsWith(prefix) || !key.endsWith('.sql.gz')) return null;
   const parts = key.slice(prefix.length).split('/');
-  if (parts.length !== 3 || parts.some((x) => !x)) return null;
-  return { server: parts[0], db: parts[1], file: parts[2] };
+  if (parts.some((x) => !x)) return null;
+  if (parts.length === 3) return { server: parts[0], db: parts[1], kind: 'scheduled', file: parts[2] }; // legacy layout
+  if (parts.length === 4 && KINDS.includes(parts[2])) return { server: parts[0], db: parts[1], kind: parts[2], file: parts[3] };
+  return null;
 }
 
 // Every child is reachable from the Kill button / job timeout.
@@ -110,7 +117,7 @@ async function loadTargets(helpers, roots) {
 }
 
 // Dump ONE database to Spaces. Returns { key, size }.
-async function backupOne(helpers, { info, warn }, s3, t, prefix, flags, suffix = '') {
+async function backupOne(helpers, { info, warn }, s3, t, prefix, flags, kind, suffix = '') {
   const secrets = await fs.mkdtemp(path.join(os.tmpdir(), 'bak-'));
   await fs.mkdir(WORK_DIR, { recursive: true, mode: 0o700 });
   const file = path.join(WORK_DIR, `${t.db}_${stampOf()}${suffix}.sql.gz`);
@@ -137,7 +144,7 @@ async function backupOne(helpers, { info, warn }, s3, t, prefix, flags, suffix =
     // An "empty" gzip is ~20 bytes; a real dump of even an empty DB has a header.
     const { size } = await fs.stat(file);
     if (size < 200) throw new Error(`the dump is only ${size} bytes — refusing to store an empty backup`);
-    const key = `${prefix}${t.label}/${t.db}/${path.basename(file)}`;
+    const key = `${prefix}${t.label}/${t.db}/${kind}/${path.basename(file)}`;
     await s3.put(key, file);
     return { key, size };
   } finally {
@@ -146,7 +153,7 @@ async function backupOne(helpers, { info, warn }, s3, t, prefix, flags, suffix =
   }
 }
 
-// params: { s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix, roots?, keepLast, maxAgeDays }
+// params: { s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix, kind, roots?, keepLast, maxAgeDays }
 export async function runDbBackup(job, helpers, p) {
   const { log, step, info, ok, warn, err } = logger(helpers);
   const s3 = clientFrom(p);
@@ -154,7 +161,7 @@ export async function runDbBackup(job, helpers, p) {
   step('Databases to back up (from seo-domain-map)');
   const targets = await loadTargets(helpers, p.roots);
   if (!targets.length) throw new Error(p.roots?.length ? `none of the chosen roots is in the map: ${p.roots.join(', ')}` : 'the map names no database');
-  info(`${targets.length} database(s)${p.roots?.length ? ` for ${p.roots.length} chosen root(s)` : ' — all of them'}`);
+  info(`${targets.length} database(s)${p.roots?.length ? ` for ${p.roots.length} chosen root(s)` : ' — all of them'} · ${p.kind === 'manual' ? 'MANUAL backup: kept until you delete it, never pruned' : 'scheduled backup: retention applies'}`);
   const flags = { mariadbClient: await clientIsMariadb(helpers, 'mysql'), dumpIsMariadb: await clientIsMariadb(helpers, 'mysqldump') };
 
   const failed = [];
@@ -163,15 +170,17 @@ export async function runDbBackup(job, helpers, p) {
     step(`${i + 1}/${targets.length}  ${t.db} @ ${t.label}  (${t.roots.join(', ')})`);
     try {
       const started = Date.now();
-      const r = await backupOne(helpers, { info, warn }, s3, t, p.prefix, flags);
+      const r = await backupOne(helpers, { info, warn }, s3, t, p.prefix, flags, p.kind);
       total += r.size;
       ok(`${mb(r.size)} -> ${r.key}  (${Math.round((Date.now() - started) / 1000)}s)`);
 
-      if (p.keepLast || p.maxAgeDays) {
-        const mine = (await s3.list(`${p.prefix}${t.label}/${t.db}/`)).filter((o) => parseKey(o.key, p.prefix));
+      // Retention is for SCHEDULED backups only, and only ever considers scheduled
+      // objects (manual ones are not even listed as candidates).
+      if (p.kind === 'scheduled' && (p.keepLast || p.maxAgeDays)) {
+        const mine = (await s3.list(`${p.prefix}${t.label}/${t.db}/`)).filter((o) => parseKey(o.key, p.prefix)?.kind === 'scheduled');
         const gone = pickExpired(mine, { keepLast: p.keepLast, maxAgeDays: p.maxAgeDays });
         for (const o of gone) await s3.del(o.key);
-        info(`retention: ${mine.length - gone.length} kept, ${gone.length} deleted`);
+        info(`retention: ${mine.length - gone.length} scheduled kept, ${gone.length} deleted (manual backups untouched)`);
       }
     } catch (e) {
       failed.push(t.db);
@@ -210,7 +219,7 @@ export async function runDbRestore(job, helpers, p) {
     // The way back: what the database holds NOW, stored next to the others.
     if (p.safety !== false) {
       step(`Safety backup of ${t.db} as it is now`);
-      const s = await backupOne(helpers, { info, warn }, s3, t, p.prefix, flags, '_pre-restore');
+      const s = await backupOne(helpers, { info, warn }, s3, t, p.prefix, flags, 'manual', '_pre-restore'); // kept forever, like a manual backup
       ok(`${mb(s.size)} -> ${s.key}`);
     } else {
       warn('safety backup skipped — there is no way back from this restore');
@@ -246,12 +255,12 @@ export async function runDbRestore(job, helpers, p) {
 
 // --- answered directly (no job): what is in the bucket, and does it work at all ---
 
-/** { backups: [{ key, server, db, file, size, modified, safety }], databases: [{ server, db, roots }] } */
+/** { backups: [{ key, server, db, kind, file, size, modified, safety }], databases: [{ server, db, roots }] } */
 export async function listBackups(p) {
   const s3 = clientFrom(p);
   const objects = await s3.list(p.prefix);
   const backups = objects.map((o) => ({ ...o, ...parseKey(o.key, p.prefix) })).filter((o) => o.db)
-    .map((o) => ({ key: o.key, server: o.server, db: o.db, file: o.file, size: o.size, modified: o.modified, safety: o.file.includes('_pre-restore') }))
+    .map((o) => ({ key: o.key, server: o.server, db: o.db, kind: o.kind, file: o.file, size: o.size, modified: o.modified, safety: o.file.includes('_pre-restore') }))
     .sort((a, b) => new Date(b.modified) - new Date(a.modified));
   let databases = [];
   try { databases = (await loadTargets(silent)).map((t) => ({ server: t.label, db: t.db, roots: t.roots })); } catch { /* map unreachable: the list still helps */ }

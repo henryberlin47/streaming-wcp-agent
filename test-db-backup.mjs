@@ -73,7 +73,10 @@ assert.deepEqual(pickExpired(objs, { maxAgeDays: 30, now }).map((o) => o.key), [
 assert.deepEqual(pickExpired(objs, { keepLast: 4, maxAgeDays: 1, now }).map((o) => o.key), ["k2", "k5", "k40"]);
 assert.deepEqual(pickExpired(objs, {}).length, 0, "no rules = keep everything");
 assert.deepEqual(pickExpired([{ key: "only", modified: new Date(now - 900 * day).toISOString() }], { maxAgeDays: 1, keepLast: 1, now }), [], "the newest backup is never deleted");
-assert.deepEqual(parseKey("wcp/db-sg1/brand_db/brand_db_20260929_000000.sql.gz", "wcp/"), { server: "db-sg1", db: "brand_db", file: "brand_db_20260929_000000.sql.gz" });
+assert.deepEqual(parseKey("wcp/db-sg1/brand_db/scheduled/brand_db_20260929_000000.sql.gz", "wcp/"), { server: "db-sg1", db: "brand_db", kind: "scheduled", file: "brand_db_20260929_000000.sql.gz" });
+assert.equal(parseKey("wcp/db-sg1/brand_db/manual/x.sql.gz", "wcp/").kind, "manual");
+assert.equal(parseKey("wcp/db-sg1/brand_db/brand_db_old.sql.gz", "wcp/").kind, "scheduled", "pre-kinds objects count as scheduled");
+assert.equal(parseKey("wcp/db-sg1/brand_db/weird/x.sql.gz", "wcp/"), null);
 assert.equal(parseKey("wcp/stray.txt", "wcp/"), null); assert.equal(parseKey("elsewhere/a/b/c.sql.gz", "wcp/"), null);
 console.log("3. retention: keep-last and max-age combine; the newest backup always survives");
 
@@ -85,7 +88,8 @@ assert.match(bad({ prefix: "../etc" }), /prefix may only contain/);
 assert.match(bad({ keepLast: -1 }), /keepLast must be/);
 assert.match(bad({ roots: ["ok.com", "not a domain"] }), /roots must all be valid domains/);
 const v = operations.dbbackup.validate({ ...S3, prefix: "/wcp/", roots: ["brand.tv", "other.tv"], keepLast: 2 });
-assert.ok(v.ok, v.errors.join()); assert.equal(v.clean.prefix, "wcp/");
+assert.ok(v.ok, v.errors.join()); assert.equal(v.clean.prefix, "wcp/"); assert.equal(v.clean.kind, "scheduled", "default kind");
+assert.match(bad({ kind: "forever" }), /kind must be scheduled or manual/);
 assert.match(operations.dbrestore.validate({ ...S3, key: "wcp/../x.sql.gz", root: "brand.tv", confirm: "brand_db" }).errors.join(), /key must be a backup object/);
 console.log("4. bad endpoint / secret / prefix / retention / roots / key are refused");
 
@@ -96,14 +100,17 @@ await assert.rejects(() => testStorage({ ...v.clean, s3Key: "WRONG" }), /HTTP 40
 await assert.rejects(() => testStorage({ ...v.clean, s3Bucket: "nope" }), /HTTP 404 NoSuchBucket/);
 console.log("5. storage test proves list+write+delete, and names the reason when it fails");
 
-// 6) a backup run: objects land under <prefix><server>/<db>/, old ones are pruned
+// 6) a scheduled run: objects land under <prefix><server>/<db>/scheduled/, old scheduled ones are
+//    pruned (legacy objects count as scheduled), and MANUAL ones are never touched
 for (const d of [3, 9]) store.set(`wcp/db-sg1/brand_db/brand_db_old${d}.sql.gz`, { body: Buffer.from("x"), modified: new Date(Date.now() - d * day).toISOString() });
+store.set("wcp/db-sg1/brand_db/manual/brand_db_keepme.sql.gz", { body: Buffer.from("x"), modified: new Date(Date.now() - 400 * day).toISOString() });
 await operations.dbbackup.run({ id: "j1" }, helpers, v.clean);
 const brand = keys("wcp/db-sg1/brand_db/");
-assert.equal(brand.length, 2, "keepLast 2: the new one + the newest old one");
-assert.ok(brand.some((k) => /brand_db_\d{8}_\d{6}\.sql\.gz$/.test(k)) && brand.some((k) => k.endsWith("old3.sql.gz")));
+assert.ok(brand.includes("wcp/db-sg1/brand_db/manual/brand_db_keepme.sql.gz"), "a manual backup survives retention however old");
+assert.equal(brand.filter((k) => !k.includes("/manual/")).length, 2, "keepLast 2 among scheduled: the new one + the newest old one");
+assert.ok(brand.some((k) => /\/scheduled\/brand_db_\d{8}_\d{6}\.sql\.gz$/.test(k)) && brand.some((k) => k.endsWith("old3.sql.gz")));
 assert.equal(keys("wcp/db-sg2/other_db/").length, 1);
-const dump = zlib.gunzipSync(store.get(brand.find((k) => !k.includes("old"))).body).toString();
+const dump = zlib.gunzipSync(store.get(brand.find((k) => k.includes("/scheduled/"))).body).toString();
 assert.match(dump, /^-- dump of brand_db/);
 const out = lines.join("\n");
 assert.ok(!out.includes(S3.s3Secret) && !out.includes("DBPASSWORD"), "no secret reaches the job log");
@@ -111,13 +118,22 @@ assert.ok(!fs.existsSync(process.env.BACKUP_DIR) || fs.readdirSync(process.env.B
 assert.ok(seen.every((a) => a.startsWith("AWS4-HMAC-SHA256 Credential=")), "every request is signed");
 console.log("6. backup: gzip dumps uploaded, retention applied, nothing secret logged, temp files removed");
 
+// 6b) a MANUAL run: stored under manual/, and retention is NOT applied at all
+await new Promise((r) => setTimeout(r, 1100));
+const before = keys("wcp/db-sg1/brand_db/").length;
+await operations.dbbackup.run({ id: "j1m" }, helpers, { ...v.clean, kind: "manual", keepLast: 1 });
+assert.equal(keys("wcp/db-sg1/brand_db/manual/").length, 2, "new manual object");
+assert.equal(keys("wcp/db-sg1/brand_db/").length, before + 1, "nothing deleted by a manual run, even with keepLast 1");
+assert.match(lines.join("\n"), /MANUAL backup: kept until you delete it/);
+console.log("6b. manual: stored apart and never pruned");
+
 // 7) one database failing does not stop the others — and fails the job
 await new Promise((r) => setTimeout(r, 1100)); // object names carry a 1-second stamp
 lines.length = 0;
 const all = operations.dbbackup.validate({ ...S3 }).clean;
 await assert.rejects(() => operations.dbbackup.run({ id: "j2" }, helpers, all), /1 database\(s\) failed: broken_db/);
 assert.match(lines.join("\n"), /mysqldump failed \(2\).*Access denied/);
-assert.equal(keys("wcp/db-sg2/other_db/").length, 2, "other_db was still backed up");
+assert.equal(keys("wcp/db-sg2/other_db/").length, 3, "other_db was still backed up (scheduled ×2 + the manual one)");
 assert.equal(keys("wcp/db-sg2/broken_db/").length, 0);
 console.log("7. a failing database is reported, the rest still run, the job is marked failed");
 
@@ -129,15 +145,17 @@ console.log("8. list: backups with server/db/size/date, and the roots on each da
 
 // 9) restore
 await new Promise((r) => setTimeout(r, 1100));
-const key = brand.find((k) => !k.includes("old"));
+const key = brand.find((k) => k.includes("/scheduled/"));
 const rs = (p) => operations.dbrestore.validate({ ...S3, key, root: "brand.tv", confirm: "brand_db", ...p });
 await assert.rejects(() => operations.dbrestore.run({ id: "j3" }, helpers, rs({ confirm: "other_db" }).clean), /confirmation does not match: brand\.tv uses database 'brand_db'/);
 assert.ok(!fs.existsSync(imported), "nothing was imported after a wrong confirmation");
 await operations.dbrestore.run({ id: "j4" }, helpers, rs({}).clean);
 assert.match(fs.readFileSync(imported, "utf8"), /^-- dump of brand_db/, "the backup's SQL reached mysql, gunzipped");
 assert.match(fs.readFileSync(mysqlArgs, "utf8"), /--force .*unique_checks=0.* brand_db/);
-assert.equal(keys("wcp/db-sg1/brand_db/").filter((k) => k.endsWith("_pre-restore.sql.gz")).length, 1, "a safety backup was taken first");
-assert.ok((await listBackups(all)).backups.find((b) => b.safety), "safety backups are flagged in the list");
+assert.equal(keys("wcp/db-sg1/brand_db/manual/").filter((k) => k.endsWith("_pre-restore.sql.gz")).length, 1, "a safety backup was taken first, as a manual (kept) one");
+const lb = (await listBackups(all)).backups;
+assert.ok(lb.find((b) => b.safety && b.kind === "manual"), "safety backups are flagged and kept");
+assert.ok(lb.every((b) => ["scheduled", "manual"].includes(b.kind)));
 console.log("9. restore: wrong confirmation refused; safety backup first, then the import");
 
 console.log("\nPASS: databases are backed up to Spaces with retention, listed, and restored safely");

@@ -16,6 +16,7 @@ import { runSecrets, SECRET_KEYS } from './secrets.js';
 import { runDbBackup, runDbRestore } from './dbbackup.js';
 import { runScan } from './scan.js';
 import { readS3Params } from '../lib/s3.js';
+import { KINDS as BACKUP_KINDS } from './dbbackup.js';
 import { checkCertPair } from '../lib/cert.js';
 import { logger } from '../lib/log.js';
 import { setEnv } from '../lib/envfile.js';
@@ -416,7 +417,7 @@ const intIn = (errors, name, v, max) => {
 };
 const dbbackup = {
   name: 'dbbackup',
-  // params: { s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix?, roots?: [domain], keepLast?, maxAgeDays? }
+  // params: { s3Endpoint, s3Region, s3Bucket, s3Key, s3Secret, prefix?, kind?: scheduled|manual, roots?: [domain], keepLast?, maxAgeDays? }
   validate(p = {}) {
     const errors = [];
     const s3 = readS3Params(p, errors);
@@ -430,7 +431,9 @@ const dbbackup = {
     }
     const keepLast = intIn(errors, 'keepLast', p.keepLast, 1000);
     const maxAgeDays = intIn(errors, 'maxAgeDays', p.maxAgeDays, 3650);
-    return { ok: errors.length === 0, errors, clean: { ...s3, roots: roots && roots.length ? roots : null, keepLast, maxAgeDays } };
+    const kind = p.kind == null ? 'scheduled' : p.kind;
+    if (!BACKUP_KINDS.includes(kind)) errors.push(`kind must be ${BACKUP_KINDS.join(' or ')}`);
+    return { ok: errors.length === 0, errors, clean: { ...s3, kind, roots: roots && roots.length ? roots : null, keepLast, maxAgeDays } };
   },
   async run(job, helpers, p) {
     await runDbBackup(job, helpers, p);
