@@ -109,6 +109,16 @@ signed with Signature V4 in `src/lib/s3.js` — no SDK; one object is capped at
 `/var/backups/db-backups`) and are removed after upload. Timeouts:
 `AGENT_BACKUP_TIMEOUT_MS` (6 h), `AGENT_RESTORE_TIMEOUT_MS` (3 h).
 
+### Malware scan (ClamAV)
+
+`POST /api/op/scan { domain }` scans `/var/www/<domain>/htdocs` with `clamscan`
+(skipping `.git` and the page cache). ClamAV is installed by the first scan and
+the signatures are refreshed when older than a day. Every hit is logged, and
+the job FAILS when anything is found so it stands out. The full report is
+written to `SCAN_REPORT_DIR` (default `/var/backups/clamav`) and served by
+`GET /api/scan/report/:jobId`; the portal offers it as a download from the
+operation's log. Timeout: `AGENT_SCAN_TIMEOUT_MS` (2 h).
+
 ## Install
 
 **Full fresh-VPS walkthrough — including WordOps, Redis, Node, and Tailscale — is

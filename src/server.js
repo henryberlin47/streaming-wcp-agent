@@ -13,6 +13,7 @@ import { enforceAdminPanelCert } from './lib/panelcert.js';
 import { cloneMap, readMapJson } from './lib/map.js';
 import { wpUsers } from './lib/wpusers.js';
 import { listBackups, testStorage } from './operations/dbbackup.js';
+import { reportFor } from './operations/scan.js';
 import { readS3Params } from './lib/s3.js';
 import { normDomain } from './operations/index.js';
 
@@ -152,6 +153,17 @@ const backupRoute = (fn) => async (req, res) => {
 };
 app.post('/api/backup/list', backupRoute(listBackups));
 app.post('/api/backup/test', backupRoute(testStorage));
+
+// --- ClamAV scan report ---------------------------------------------------------
+// GET /api/scan/report/:jobId -> the full text report of that scan job (as a file)
+app.get('/api/scan/report/:jobId', async (req, res) => {
+  const r = await reportFor(req.params.jobId);
+  if (!r) return res.status(404).json({ error: 'no_report', message: 'no report for that scan (reports live on the server that ran it)' });
+  res.set('Content-Type', 'text/plain; charset=utf-8');
+  res.set('Content-Disposition', `attachment; filename="clamav_${r.name}"`);
+  res.set('Cache-Control', 'no-store');
+  r.stream().pipe(res);
+});
 
 // --- start an operation -----------------------------------------------------
 // POST /api/op/:type   body = operation params
