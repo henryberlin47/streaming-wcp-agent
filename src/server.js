@@ -14,6 +14,7 @@ import { cloneMap, readMapJson } from './lib/map.js';
 import { wpUsers } from './lib/wpusers.js';
 import { listBackups, testStorage } from './operations/dbbackup.js';
 import { reportFor } from './operations/scan.js';
+import { phpVersion } from './operations/phpupgrade.js';
 import { readS3Params } from './lib/s3.js';
 import { normDomain } from './operations/index.js';
 
@@ -63,9 +64,15 @@ async function refreshPublicIp() {
 }
 refreshPublicIp();
 setInterval(refreshPublicIp, 6 * 3600 * 1000).unref();
+// PHP version (php -v), so the portal can show who is patched. Re-read hourly
+// and, since a phpupgrade job changes it, cheaply after every job as well.
+let PHP_VERSION = '';
+const refreshPhp = () => phpVersion().then((v) => { if (v) PHP_VERSION = v; }).catch(() => {});
+refreshPhp();
+setInterval(refreshPhp, 3600 * 1000).unref();
 
 app.get('/healthz', (req, res) => {
-  res.json({ ok: true, server: config.serverName, version: VERSION, public_ip: PUBLIC_IP, time: Date.now() });
+  res.json({ ok: true, server: config.serverName, version: VERSION, public_ip: PUBLIC_IP, php: PHP_VERSION || null, time: Date.now() });
 });
 
 // Everything below requires auth + passes the IP allowlist.
@@ -176,7 +183,7 @@ app.post('/api/op/:type', (req, res) => {
   const { ok, errors, clean } = op.validate(req.body || {});
   if (!ok) return res.status(400).json({ error: 'validation_failed', errors });
 
-  const job = enqueue(type, clean, (j, helpers) => op.run(j, helpers, clean));
+  const job = enqueue(type, clean, (j, helpers) => op.run(j, helpers, clean).finally(() => { if (type === 'phpupgrade') refreshPhp(); }));
   res.status(202).json({ jobId: job.id, state: job.state, view: publicView(job) });
 });
 

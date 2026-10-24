@@ -15,6 +15,7 @@ import { runWww } from './www.js';
 import { runSecrets, SECRET_KEYS } from './secrets.js';
 import { runDbBackup, runDbRestore } from './dbbackup.js';
 import { runScan } from './scan.js';
+import { runPhpUpgrade } from './phpupgrade.js';
 import { readS3Params } from '../lib/s3.js';
 import { KINDS as BACKUP_KINDS } from './dbbackup.js';
 import { checkCertPair } from '../lib/cert.js';
@@ -362,6 +363,19 @@ const purge = {
 };
 
 // ============================================================
+//  phpupgrade — apply PHP package updates (patch releases), restart fpm (no params)
+// ============================================================
+const phpupgrade = {
+  name: 'phpupgrade',
+  validate() {
+    return { ok: true, errors: [], clean: {} };
+  },
+  async run(job, helpers) {
+    await runPhpUpgrade(job, helpers);
+  },
+};
+
+// ============================================================
 //  scan — ClamAV malware scan of a site's files (report downloadable afterwards)
 // ============================================================
 const scan = {
@@ -545,7 +559,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets, dbbackup, dbrestore, scan };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets, dbbackup, dbrestore, scan, phpupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;

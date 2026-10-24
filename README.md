@@ -121,6 +121,15 @@ written to `SCAN_REPORT_DIR` (default `/var/backups/clamav`) and served by
 `GET /api/scan/report/:jobId`; the portal offers it as a download from the
 operation's log. Timeout: `AGENT_SCAN_TIMEOUT_MS` (2 h).
 
+### PHP package updates
+
+`POST /api/op/phpupgrade` runs `apt-get update` and `apt-get install
+--only-upgrade` for every installed `php*` package (non-interactive, existing
+config files kept), restarts each `php*-fpm` and re-applies the tuning. It moves
+a version to its newest patch release (8.3.26 → 8.3.36); it never changes a
+site's major version. `/healthz` reports `php` (`php -v`) so the portal can show
+who is patched.
+
 ## Install
 
 **Full fresh-VPS walkthrough — including WordOps, Redis, Node, and Tailscale — is
