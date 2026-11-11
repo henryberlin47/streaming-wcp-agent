@@ -42,5 +42,14 @@ if (fsOk) {
 } else {
   console.log("2. (skipped: /etc/cron.d not writable here — rename logic exercised on a server)");
 }
+// 3) job count: comments, blanks and SHELL=/PATH= lines are not jobs; counted whether the file is on or off
+const jobsFile = `SHELL=/bin/bash\nPATH=/usr/bin:/bin\n\n# ---- Football ----\n*/5 * * * * www-data /usr/bin/flock -n /tmp/x.lock bash -c 'cd /x && php wp'\n0 0 * * * www-data true\n  # indented comment\n@daily www-data true\n`;
+fs.writeFileSync(site.cronPath("jobs.com"), jobsFile);
+assert.equal(await site.siteCronJobs("jobs.com"), 3);
+fs.renameSync(site.cronPath("jobs.com"), `${site.cronPath("jobs.com")}.disabled`);
+assert.equal(await site.siteCronJobs("jobs.com"), 3, "a disabled (backup) cron file is counted too");
+assert.equal(await site.siteCronJobs("ghost.com"), 0);
+console.log("3. cron jobs counted (comments / env lines excluded), on or off");
+
 console.log("\nPASS: backup sites' cron can be switched on/off");
 fs.rmSync(base, { recursive: true, force: true });

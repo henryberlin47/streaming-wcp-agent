@@ -99,6 +99,16 @@ export async function siteCron(domain) {
   if (await pathExists(`${cronPath(domain)}.disabled`)) return 'off';
   return null; // no cron file at all
 }
+// How many jobs a site's cron file holds (active or .disabled): every line that
+// is not blank, a comment, or a VAR=value assignment (SHELL=, PATH=, MAILTO=).
+export async function siteCronJobs(domain) {
+  for (const f of [cronPath(domain), `${cronPath(domain)}.disabled`]) {
+    let text;
+    try { text = await fs.readFile(f, 'utf8'); } catch { continue; }
+    return text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#') && !/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(l)).length;
+  }
+  return 0;
+}
 // Returns the state after the call; throws if the site has no cron file.
 export async function setSiteCron(helpers, domain, active) {
   const on = cronPath(domain), off = `${on}.disabled`;
@@ -267,7 +277,7 @@ export async function siteRoles(sites) {
     const www = await siteWww(d); // 'nonwww' | 'www' | 'off' (absent = no vhost)
     const cron = await siteCron(d); // 'on' | 'off' | null
     const backup = (await readEnv(env, 'SITE_BACKUP')) === '1';
-    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }), ...(await siteGit(d)), ...(cron && { cron }), ...(backup && { backup }) };
+    meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }), ...(await siteGit(d)), ...(cron && { cron, cron_jobs: await siteCronJobs(d) }), ...(backup && { backup }) };
     if ((await readEnv(env, 'SITE_ROLE')) === 'clone') { mobs.set(d, await mainOfAlias(d)); return; }
     const mob = await readEnv(env, 'SITE_MOBILE_HOST');
     if (mob && mob !== d && live.has(mob)) mobileHost[d] = mob;
