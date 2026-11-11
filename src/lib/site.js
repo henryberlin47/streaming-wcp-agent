@@ -236,10 +236,31 @@ export async function siteGit(domain) {
 //   root = SITE_ROOT_DOMAIN (the domain-map key its DB creds came from)
 //   role/pair = 'pc'|'mob' + the other half, so the portal can group them.
 // Domains with none of these are omitted.
+// The main site an alias (SITE_ROLE=clone) belongs to, from the ALIAS's own .env:
+// SITE_MAIN_DOMAIN (written by the alias deploy) or, for aliases deployed before
+// that existed, SITE_CANONICAL_HOST — which an alias inherits from its main's
+// .env and never changes. '' if neither names another site.
+export async function mainOfAlias(domain) {
+  const env = `${config.wwwDir}/${domain}/htdocs/src/.env`;
+  if ((await readEnv(env, 'SITE_ROLE')) !== 'clone') return '';
+  const main = (await readEnv(env, 'SITE_MAIN_DOMAIN')) || (await readEnv(env, 'SITE_CANONICAL_HOST'));
+  return main && main !== domain ? main : '';
+}
+
+// The live aliases of a main site on this server (sorted).
+export async function aliasesOf(mainDomain) {
+  let dirs = [];
+  try { dirs = await fs.readdir(config.wwwDir); } catch { return []; }
+  const out = [];
+  for (const d of dirs) if (d !== mainDomain && (await mainOfAlias(d)) === mainDomain) out.push(d);
+  return out.sort();
+}
+
 export async function siteRoles(sites) {
   const live = new Set(sites);
   const meta = {};
-  const mobs = new Set();
+  const mobs = new Map();     // alias -> the main its own .env names ('' if none)
+  const mobileHost = {};      // main -> its SITE_MOBILE_HOST, when that site is live
   await Promise.all(sites.map(async (d) => {
     const env = `${config.wwwDir}/${d}/htdocs/src/.env`;
     const root = await readEnv(env, 'SITE_ROOT_DOMAIN');
@@ -247,16 +268,28 @@ export async function siteRoles(sites) {
     const cron = await siteCron(d); // 'on' | 'off' | null
     const backup = (await readEnv(env, 'SITE_BACKUP')) === '1';
     meta[d] = { ...(root && { root }), ...(await siteSsl(d)), ...(www && { www }), ...(await siteGit(d)), ...(cron && { cron }), ...(backup && { backup }) };
-    if ((await readEnv(env, 'SITE_ROLE')) === 'clone') { mobs.add(d); return; }
+    if ((await readEnv(env, 'SITE_ROLE')) === 'clone') { mobs.set(d, await mainOfAlias(d)); return; }
     const mob = await readEnv(env, 'SITE_MOBILE_HOST');
-    if (mob && live.has(mob)) meta[d] = { ...meta[d], role: 'pc', pair: mob };
+    if (mob && mob !== d && live.has(mob)) mobileHost[d] = mob;
   }));
-  // Invert pc→alias so each alias knows its main (undefined if the main
-  // doesn't point back at it — it then shows as a standalone MOB).
-  const mainOf = new Map(
-    Object.entries(meta).filter(([, v]) => v.role === 'pc').map(([main, v]) => [v.pair, main])
-  );
-  for (const d of mobs) meta[d] = { ...meta[d], role: 'mob', pair: mainOf.get(d) };
+  // Pair each alias with its main. The alias's OWN .env is the authority; the
+  // main's SITE_MOBILE_HOST is only a fallback, because it holds ONE alias and a
+  // main redeploy used to rewrite the .env without it — relying on it alone left
+  // every other alias (and any alias of a redeployed main) unrecognised.
+  const hostOwner = new Map(Object.entries(mobileHost).map(([main, mob]) => [mob, main]));
+  const aliases = {};
+  for (const [d, named] of mobs) {
+    const main = named && live.has(named) && !mobs.has(named) ? named : hostOwner.get(d);
+    meta[d] = { ...meta[d], role: 'mob', ...(main && { pair: main }) };
+    if (main) (aliases[main] ||= []).push(d);
+  }
+  // A main with at least one live alias is a PC site. `pair` stays a single
+  // alias (the one the app itself redirects to, else the first) for older
+  // portals; `aliases` lists them all.
+  for (const [main, list] of Object.entries(aliases)) {
+    list.sort();
+    meta[main] = { ...meta[main], role: 'pc', pair: list.includes(mobileHost[main]) ? mobileHost[main] : list[0], aliases: list };
+  }
   return meta;
 }
 

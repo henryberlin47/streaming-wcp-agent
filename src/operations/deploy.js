@@ -8,7 +8,7 @@ import {
 } from '../lib/envfile.js';
 import {
   writeNginxVhost, writeMainCron, finalizeCronPerms, woSiteCreate, woSiteSsl,
-  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost, cronPath,
+  dropLocalWoDb, applySitePerms, cloneRepo, tuneAndRestartPhp, siteWww, canonicalHost, cronPath, aliasesOf,
 } from '../lib/site.js';
 import { resolveFromMap } from '../lib/map.js';
 import { brandAdd, brandDelete, cdnAdd, cdnDelete } from '../lib/api.js';
@@ -91,6 +91,14 @@ export async function runDeploy(job, helpers, p) {
   await setEnv(ENV_FILE, 'DB_USER', creds.DB_USER);
   await setEnv(ENV_FILE, 'DB_PASSWORD', creds.DB_PASSWORD);
   await setEnv(ENV_FILE, 'SITE_CANONICAL_HOST', domain);
+  // The .env was just rebuilt from the example, which drops SITE_MOBILE_HOST. On
+  // a REDEPLOY of a main that has an alias, put it back, or the site forgets its
+  // mobile host until the alias is deployed again.
+  const liveAliases = await aliasesOf(domain);
+  if (liveAliases.length) {
+    await setEnv(ENV_FILE, 'SITE_MOBILE_HOST', liveAliases[0]);
+    info(`SITE_MOBILE_HOST='${liveAliases[0]}' restored (existing alias${liveAliases.length > 1 ? `; ${liveAliases.length - 1} more alias(es) on this main` : ''})`);
+  }
   await setEnv(ENV_FILE, 'SITE_ROOT_DOMAIN', root); // the map key its DB creds came from (shown in the portal)
   await setEnv(ENV_FILE, 'CDN_PREFIX', CDN_PREFIX);
   await setEnvRaw(ENV_FILE, 'DB_SSL', SITE_DEFAULTS.DB_SSL); // raw: DB_SSL=false

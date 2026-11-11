@@ -85,6 +85,7 @@ export async function runAlias(job, helpers, p, opts = {}) {
   await setWpSiteUrl(ENV_FILE);
   await setEnv(ENV_FILE, 'ADVMO_DOS_DOMAIN', `https://${CDN_DOMAIN}/`);
   await setEnv(ENV_FILE, 'SITE_ROLE', 'clone');
+  await setEnv(ENV_FILE, 'SITE_MAIN_DOMAIN', mainDomain); // how the portal knows whose alias this is (see siteRoles)
   if (isBackup) await setEnv(ENV_FILE, 'SITE_BACKUP', '1');
   ok('WP_HOME, WP_SITEURL, ADVMO_DOS_DOMAIN, SITE_ROLE updated');
   info('SITE_CANONICAL_HOST, SITE_MOBILE_HOST, CDN_PREFIX, DB, Spaces, Telegram, salts inherited from main');

@@ -130,6 +130,15 @@ a version to its newest patch release (8.3.26 → 8.3.36); it never changes a
 site's major version. `/healthz` reports `php` (`php -v`) so the portal can show
 who is patched.
 
+### PC / MOB pairing
+
+An alias (`SITE_ROLE=clone`) names its main in its own `.env`: `SITE_MAIN_DOMAIN`
+(written by the alias deploy) or, for older aliases, the `SITE_CANONICAL_HOST` it
+inherited. `GET /api/sites` pairs sites from that, so a main can have several
+aliases (`aliases: [...]`) and stays paired after it is redeployed. The main's
+`SITE_MOBILE_HOST` holds one alias only and is a fallback; a main redeploy now
+restores it from the aliases present.
+
 ## Install
 
 **Full fresh-VPS walkthrough — including WordOps, Redis, Node, and Tailscale — is
