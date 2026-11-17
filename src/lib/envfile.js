@@ -83,10 +83,10 @@ export async function readEnv(file, key) {
   const m = re.exec(content);
   if (!m) return '';
   let v = m[1].trim();
-  // strip a single layer of surrounding quotes
-  if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) {
-    v = v.slice(1, -1);
-  }
+  // strip a single layer of surrounding quotes; a single-quoted value also gets
+  // setEnv's escaping undone ('\'' -> '), so read(set(x)) === x for any x
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/'\\''/g, "'");
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
   return v;
 }
 
