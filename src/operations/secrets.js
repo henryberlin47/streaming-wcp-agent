@@ -63,3 +63,23 @@ export async function runSecrets(job, helpers, p) {
   else info('agent .env unchanged — no restart needed');
   log(`Secrets rotated: ${keys.join(', ')}`);
 }
+
+// ============================================================
+//  rotatekey — replace this agent's own bearer token (AGENT_TOKEN)
+// ============================================================
+// The portal generates the new key and sends it here. It goes into .env and is
+// accepted at once ALONGSIDE the old one; the restart a few seconds later leaves
+// only the new one. That overlap is what lets the portal read this job's result
+// with the old key and then switch. The key is never logged.
+export async function runRotateKey(job, helpers, p) {
+  const { step, ok } = logger(helpers);
+  requireEmptyQueue(job);
+  step(`Agent .env (${AGENT_ENV})`);
+  if (!(await pathExists(AGENT_ENV))) throw new Error(`${AGENT_ENV} not found`);
+  await setEnv(AGENT_ENV, 'AGENT_TOKEN', p.token);
+  await fs.chmod(AGENT_ENV, 0o600);
+  config.nextToken = p.token;
+  ok('new key written; it is accepted from now on');
+  step('Restart the agent so the old key stops working');
+  ok(await scheduleRestart(helpers));
+}

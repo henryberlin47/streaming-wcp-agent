@@ -44,7 +44,9 @@ export function requireAuth(req, res, next) {
   if (!m) {
     return res.status(401).json({ error: 'unauthorized', reason: 'missing_bearer' });
   }
-  if (!safeEqual(m[1], config.authToken)) {
+  // nextToken: set by a key rotation, valid alongside the old key only until the
+  // restart it schedules — so the portal can read the result and switch over.
+  if (!safeEqual(m[1], config.authToken) && !(config.nextToken && safeEqual(m[1], config.nextToken))) {
     return res.status(401).json({ error: 'unauthorized', reason: 'bad_token' });
   }
 

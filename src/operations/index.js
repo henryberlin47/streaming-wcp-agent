@@ -12,7 +12,7 @@ import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
 import { tunePhpNow, WWW_MODES, setSiteCron } from '../lib/site.js';
 import { runWww } from './www.js';
-import { runSecrets, SECRET_KEYS } from './secrets.js';
+import { runSecrets, runRotateKey, SECRET_KEYS } from './secrets.js';
 import { runDbBackup, runDbRestore } from './dbbackup.js';
 import { runScan } from './scan.js';
 import { runPhpUpgrade } from './phpupgrade.js';
@@ -495,6 +495,21 @@ const secrets = {
 };
 
 // ============================================================
+//  rotatekey — replace the agent's bearer token: { token }
+// ============================================================
+const rotatekey = {
+  name: 'rotatekey',
+  validate(p = {}) {
+    // same floor as startup (config.js), and nothing an env file could trip on
+    const ok = typeof p.token === 'string' && /^[A-Za-z0-9_-]{32,200}$/.test(p.token);
+    return { ok, errors: ok ? [] : ['token must be 32-200 characters of A-Z a-z 0-9 _ -'], clean: { token: p.token } };
+  },
+  async run(job, helpers, p) {
+    await runRotateKey(job, helpers, p);
+  },
+};
+
+// ============================================================
 //  selfupdate — git pull this agent + restart it (no params)
 // ============================================================
 const selfupdate = {
@@ -559,7 +574,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets, dbbackup, dbrestore, scan, phpupgrade };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;

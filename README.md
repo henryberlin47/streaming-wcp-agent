@@ -272,3 +272,13 @@ server only at bootstrap. To rotate: change them here, restart the portal, then
 Servers → **Push secrets (all)** (or per server: ⋯ → Push secrets). Each agent
 writes them into its own `.env` and into every deployed site's `.env`, then
 restarts itself. Values are never stored in the operation record.
+
+## Rotating the agent key
+
+`POST /api/op/rotatekey` `{ token }` replaces this agent's own bearer token
+(`AGENT_TOKEN`). The portal generates the new key (Servers → ⋯ → **Rotate agent
+key**, or **Rotate keys (all)**). The agent writes it to its `.env`, accepts it
+at once **alongside** the old key, and restarts itself ~5 s later — after which
+only the new key works. The overlap lets the portal read the job's result with
+the old key and then switch. Like the other restarting operations it refuses
+while another job is queued. The key is never logged.
