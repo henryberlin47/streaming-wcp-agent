@@ -14,6 +14,7 @@ fs.writeFileSync(path.join(dropins, "50-cloud-init.conf"), "PasswordAuthenticati
 const passwd = path.join(base, "passwd");
 fs.writeFileSync(passwd, `root:x:0:0:root:${rootHome}:/bin/bash\nwww-data:x:33:33:www-data:${base}/www:/usr/sbin/nologin\ndeploy:x:1000:1000::${base}/deploy:/bin/bash\n`);
 const shadow = path.join(base, "shadow"); fs.writeFileSync(shadow, "root:$6$hash:1::::::\nwww-data:*:1::::::\ndeploy::1::::::\n");
+const group = path.join(base, "group"); fs.writeFileSync(group, "root:x:0:\nsudo:x:27:deploy\nwww-data:x:33:\n");
 const sshlog = path.join(base, "sshlog");
 // sshd: -t = syntax check; -T = effective settings. Like the real one, the FIRST value wins and drop-ins are read in name order, before the defaults.
 stub("sshd", `if [ "$1" = "-t" ]; then [ -f "${base}/sshd-t-fails" ] && { echo "bad configuration option" >&2; exit 1; }; exit 0; fi
@@ -25,7 +26,7 @@ stub("mysql", `case "$*" in *mysql.func*) printf 'sys_exec\\tlib_mysqludf_sys.so
 stub("dpkg", "exit 0"); // everything "already installed": no apt in a test
 stub("ufw", `echo "$*" >> "${base}/ufw"; [ "$1" = status ] && echo "Status: inactive"; exit 0`);
 stub("ss", `echo 'LISTEN 0 511 0.0.0.0:22222 0.0.0.0:* users:(("nginx",pid=1,fd=6))'`);
-Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENT_PASSWD_FILE: passwd, AGENT_SHADOW_FILE: shadow, AGENT_SSHD_DROPIN_DIR: dropins,
+Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENT_PASSWD_FILE: passwd, AGENT_SHADOW_FILE: shadow, AGENT_GROUP_FILE: group, AGENT_KEY_SEARCH_DIRS: base, AGENT_SSHD_DROPIN_DIR: dropins,
   AGENT_F2B_JAIL_DIR: path.join(base, "jail.d"), AGENT_APT_CONF_DIR: path.join(base, "apt.conf.d"), AGENT_WWW_DIR: path.join(base, "www"), AGENT_ENV_FILE: path.join(base, "agent.env"),
   AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_TOKEN: "t".repeat(64) });
 
@@ -58,6 +59,8 @@ const ss = S.parseListening('LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",p
 assert.deepEqual(ss.map((l) => `${l.port}/${l.scope}/${l.proc}`), ["80/all/nginx", "3306/private/mariadbd", "6379/local/redis-server", "8787/all/node"]);
 const accts = S.parseAccounts(fs.readFileSync(passwd, "utf8"), fs.readFileSync(shadow, "utf8"));
 assert.deepEqual(accts.map((u) => [u.name, u.login, u.password]), [["root", true, "set"], ["www-data", false, "locked"], ["deploy", true, "none"]]);
+const full = S.parseAccounts("root:x:0:0::/root:/bin/bash\nbackup:x:34:34::/var/backups:/bin/sh\nops:x:1001:27::/home/ops:/bin/bash\n", "root:$6$h:20000::::::\nbackup:$6$h:20772::::::\nops:!:20001::::::\n", "sudo:x:27:\n");
+assert.deepEqual(full.map((u) => [u.name, u.system, u.sudo, u.changed]), [["root", false, false, "2024-10-04"], ["backup", true, false, "2026-11-15"], ["ops", false, true, "2024-10-05"]], "service accounts, sudo by primary group, and the day the password field changed");
 console.log("1. parsers: SSH log (logins, refusals with addresses), sshd settings, keys, firewall, listening ports, accounts");
 
 // ---- 2) findings ---------------------------------------------------------------------------
@@ -86,7 +89,17 @@ const clean = S.findingsFrom({
 });
 assert.deepEqual(clean, [], "a hardened server has nothing to report");
 assert.equal(S.findingsFrom({ ...risky, users: [{ name: "root", uid: 0, login: true, password: "set", keys: [{ fingerprint: "SHA256:a" }] }] }).find((f) => f.id === "ssh-password").fix, "ssh-keys-only");
-console.log("2. findings: a risky server is flagged across SSH, accounts, firewall, ports, updates, web user; a hardened one is clean");
+// intruder patterns on accounts: a key or password on a service account, a brand-new account, a stray key file
+const acct = S.findingsFrom({ at: "2026-11-17T12:00:00Z", strayKeyFiles: ["/var/tmp/.x/authorized_keys"], users: [
+  { name: "root", uid: 0, login: true, password: "set", changed: "2026-07-14", keys: [{ fingerprint: "SHA256:a" }] },
+  { name: "www-data", uid: 33, system: true, login: false, password: "locked", changed: "2024-03-19", keys: [{ fingerprint: "SHA256:evil", comment: "x@kali" }] },
+  { name: "backup", uid: 34, system: true, login: true, password: "set", changed: "2026-11-15", keys: [] },
+  { name: "support", uid: 1001, login: true, password: "set", changed: "2026-11-16", sudo: true, keys: [] },
+  { name: "ubuntu", uid: 1000, login: true, password: "locked", changed: "2026-07-14", sudo: true, keys: [{ fingerprint: "SHA256:b" }] },
+] }).map((f) => `${f.severity}:${f.id}`);
+for (const id of ["high:acct-keys-www-data", "high:acct-pass-backup", "medium:acct-new-backup", "medium:acct-new-support", "low:acct-sudo-support", "low:acct-sudo-ubuntu", "high:stray-keys-/var/tmp/.x/authorized_keys"]) assert.ok(acct.includes(id), `finds ${id}: ${acct}`);
+assert.ok(!acct.some((x) => /acct-(new|keys|pass)-(root|ubuntu)/.test(x)), "an old root and a normal user with a key are not flagged");
+console.log("2. findings: a risky server is flagged across SSH, accounts, firewall, ports, updates, web user; a hardened one is clean; planted accounts and keys are caught");
 
 // ---- 3) authorized keys --------------------------------------------------------------------
 const kp = path.join(base, "k1"), kp2 = path.join(base, "k2");
@@ -145,10 +158,19 @@ console.log("5. fail2ban, auto-updates, firewall (SSH allowed first), SSH limits
 
 fs.mkdirSync(path.join(base, "mysql")); fs.mkdirSync(path.join(base, "tmp"));
 fs.writeFileSync(path.join(base, "mysql/lib_mysqludf_sys.so"), "x"); fs.writeFileSync(path.join(base, "tmp/pt7408.so"), "x"); fs.writeFileSync(path.join(base, "mysql/ibdata1"), "x");
+// a key hidden in the forgotten second file of a service account, and a key file that belongs to nobody
+fs.mkdirSync(path.join(base, "www/.ssh"), { recursive: true }); fs.writeFileSync(path.join(base, "www/.ssh/authorized_keys2"), `${pub}\n`);
+fs.mkdirSync(path.join(base, "tmp/.x"), { recursive: true }); fs.writeFileSync(path.join(base, "tmp/.x/authorized_keys"), `${pub}\n`);
 // ---- 5) the audit end to end on the fake box --------------------------------------------------
 const audit = await S.collectSecurity();
 assert.equal(audit.ssh.passwordauthentication, "no"); assert.equal(audit.users.find((u) => u.name === "root").keys.length, 1);
 assert.ok(audit.findings.some((f) => f.id === "nopass-deploy"), "an account with an empty password is flagged");
+assert.deepEqual(audit.users.map((u) => u.name), ["root", "www-data", "deploy"], "every account that can log in, holds a key or may sudo");
+assert.deepEqual(audit.users.find((u) => u.name === "www-data").keys.map((k) => [k.comment, k.file]), [["test@k1", "authorized_keys2"]]);
+for (const id of ["acct-keys-www-data", "acct-sudo-deploy"]) assert.ok(audit.findings.some((f) => f.id === id), `finds ${id}`);
+assert.deepEqual(audit.strayKeyFiles.map((f) => f.replace(fs.realpathSync(base), "").replace(base, "")), ["/tmp/.x/authorized_keys"]);
+await S.removeKey("www-data", audit.users.find((u) => u.name === "www-data").keys[0].fingerprint);
+assert.equal((await S.listKeys(path.join(base, "www"))).length, 0, "and it can be removed from the panel");
 assert.ok(!JSON.stringify(audit).includes("$6$hash"), "no password hash in the report");
 // an attack through the database: dropped libraries, a loaded command function, root open to any address
 assert.deepEqual(audit.database.droppedLibs.map((p) => path.basename(p)).sort(), ["lib_mysqludf_sys.so", "pt7408.so"]);

@@ -18,6 +18,9 @@ import { run, pathExists } from './sys.js';
 // ============================================================
 const PASSWD = process.env.AGENT_PASSWD_FILE || '/etc/passwd';
 const SHADOW = process.env.AGENT_SHADOW_FILE || '/etc/shadow';
+const GROUP = process.env.AGENT_GROUP_FILE || '/etc/group';
+// where an authorized_keys file could be hidden outside an account's own home
+const KEY_SEARCH = (process.env.AGENT_KEY_SEARCH_DIRS || '/home,/root,/var,/opt,/srv,/etc,/usr/local,/tmp').split(',');
 const TMP_DIRS = (process.env.AGENT_TMP_DIRS || '/tmp,/var/tmp,/dev/shm').split(',');
 // where a database account can write files: its data and run folders, plus the temp folders
 const DB_DIRS = (process.env.AGENT_DB_DIRS || '/var/lib/mysql,/run/mysqld').split(',');
@@ -136,17 +139,38 @@ export function parseListening(text) {
   return [...seen.values()].sort((a, b) => a.port - b.port);
 }
 
-/** /etc/passwd (+ /etc/shadow) -> [{ name, uid, home, shell, login, password: set|locked|none|unknown }] */
-export function parseAccounts(passwd, shadow = '') {
+/**
+ * /etc/passwd (+ /etc/shadow, /etc/group) ->
+ *   [{ name, uid, gid, home, shell, login, system, password: set|locked|none|unknown, changed, sudo }]
+ * `changed` is the day the password field last changed (YYYY-MM-DD) — for an
+ * account nobody has touched since, the day it was created. `sudo` = member of
+ * sudo/admin/wheel. No hash ever leaves this function.
+ */
+export function parseAccounts(passwd, shadow = '', group = '') {
   const pw = new Map();
   for (const l of String(shadow).split('\n')) {
-    const [name, hash] = l.split(':');
-    if (name && hash !== undefined) pw.set(name, hash === '' ? 'none' : /^[!*]/.test(hash) ? 'locked' : 'set');
+    const [name, hash, days] = l.split(':');
+    if (name && hash !== undefined) {
+      pw.set(name, {
+        password: hash === '' ? 'none' : /^[!*]/.test(hash) ? 'locked' : 'set',
+        changed: /^\d+$/.test(days || '') && Number(days) > 0 ? new Date(Number(days) * 86400000).toISOString().slice(0, 10) : null,
+      });
+    }
   }
-  return String(passwd).split('\n').map((l) => l.split(':')).filter((p) => p.length >= 7).map(([name, , uid, , , home, shell]) => ({
-    name, uid: Number(uid), home, shell,
+  const sudoers = new Set(), sudoGids = new Set();
+  for (const l of String(group).split('\n')) {
+    const [g, , gid, members] = l.split(':');
+    if (!['sudo', 'admin', 'wheel'].includes(g)) continue;
+    sudoGids.add(Number(gid));
+    for (const m of String(members || '').split(',')) if (m.trim()) sudoers.add(m.trim());
+  }
+  return String(passwd).split('\n').map((l) => l.split(':')).filter((p) => p.length >= 7).map(([name, , uid, gid, , home, shell]) => ({
+    name, uid: Number(uid), gid: Number(gid), home, shell,
     login: !/(nologin|false|sync|shutdown|halt)$/.test(shell.trim()),
-    password: pw.get(name) || 'unknown',
+    system: Number(uid) > 0 && Number(uid) < 1000,
+    password: pw.get(name)?.password || 'unknown',
+    changed: pw.get(name)?.changed || null,
+    sudo: sudoers.has(name) || sudoGids.has(Number(gid)),
   }));
 }
 
@@ -175,10 +199,18 @@ export function findingsFrom(f) {
   if (byPassword.length) add('medium', 'ssh-password-logins', `${byPassword.length} SSH login(s) used a password`, `From ${[...new Set(byPassword.map((l) => l.ip))].slice(0, 6).join(', ')}. Check each address is yours.`);
   if (Number(ssh.maxauthtries) > 4 || ssh.x11forwarding === 'yes' || ssh.permitemptypasswords === 'yes') add('low', 'ssh-basics', 'SSH limits are loose', `MaxAuthTries ${ssh.maxauthtries || '?'}, X11Forwarding ${ssh.x11forwarding || '?'}. Tighten them.`, 'ssh-basics');
 
+  const recent = (d) => d && (Date.parse(f.at || new Date().toISOString()) - Date.parse(d)) / 86400000 <= 14;
   for (const u of f.users || []) {
+    const keys = u.keys?.length || 0;
     if (u.uid === 0 && u.name !== 'root') add('high', `uid0-${u.name}`, `Account "${u.name}" has root's user id`, 'A second uid-0 account is a classic backdoor. Remove it unless you created it.');
     if (u.password === 'none' && u.login) add('high', `nopass-${u.name}`, `Account "${u.name}" has an empty password`, 'It can log in without one. Lock it or set a password.');
+    // service accounts (uid below 1000) never log in: a key or a password on one is how an intruder keeps a way back
+    if (u.name !== 'root' && keys && (u.system || !u.login)) add('high', `acct-keys-${u.name}`, `Service account "${u.name}" has ${keys} SSH key(s)`, `Accounts like this never log in over SSH. A key here is a common backdoor — check whose it is (${u.keys.map((k) => k.comment || k.fingerprint).slice(0, 2).join(', ')}) and remove it if it is not yours.`);
+    if (u.system && u.login && u.password === 'set') add('high', `acct-pass-${u.name}`, `Service account "${u.name}" has a shell and a password`, `uid ${u.uid}, shell ${u.shell}. Service accounts are normally locked; this one can be logged in to.`);
+    if (u.name !== 'root' && u.sudo) add('low', `acct-sudo-${u.name}`, `Account "${u.name}" can become root (sudo)`, 'Fine if it is yours. An account you do not recognise in the sudo group is a takeover.');
+    if (recent(u.changed) && (u.login || keys)) add('medium', `acct-new-${u.name}`, `Account "${u.name}" was created or had its password changed on ${u.changed}`, u.name === 'root' ? 'If you did not change root\'s password on that day, someone else did.' : 'If you did not create or change this account on that day, treat it as an intruder\'s.');
   }
+  for (const p of f.strayKeyFiles || []) add('high', `stray-keys-${p}`, 'An authorized_keys file outside any account\'s home', `${p} — sshd does not normally read it, but it has no reason to exist. Check what it is.`);
 
   const failed = f.logins?.failed?.total || 0;
   const f2b = f.fail2ban || {};
@@ -231,21 +263,26 @@ const fingerprintOf = async (line) => {
   return r.code === 0 ? parseKeygenLine(r.stdout.split('\n')[0]) : null;
 };
 const keysFile = (home) => path.join(home, '.ssh', 'authorized_keys');
+// sshd reads BOTH by default (AuthorizedKeysFile .ssh/authorized_keys .ssh/authorized_keys2);
+// the second is long forgotten, which is exactly why intruders use it.
+const keysFiles = (home) => [keysFile(home), `${keysFile(home)}2`];
 
-/** Keys allowed to log in to an account: [{ fingerprint, type, bits, comment, restricted }] */
+/** Keys allowed to log in to an account: [{ fingerprint, type, bits, comment, restricted, file }] */
 export async function listKeys(home) {
   const out = [];
-  for (const raw of (await readText(keysFile(home))).split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const k = await fingerprintOf(line);
-    // a line that starts with options (command=…, from=…) is still a key, with strings attached
-    if (k) out.push({ ...k, restricted: !KEY_LINE.test(line) });
+  for (const file of keysFiles(home)) {
+    for (const raw of (await readText(file)).split('\n')) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const k = await fingerprintOf(line);
+      // a line that starts with options (command=…, from=…) is still a key, with strings attached
+      if (k) out.push({ ...k, restricted: !KEY_LINE.test(line), file: path.basename(file) });
+    }
   }
   return out;
 }
 
-const accounts = async () => parseAccounts(await readText(PASSWD), await readText(SHADOW));
+const accounts = async () => parseAccounts(await readText(PASSWD), await readText(SHADOW), await readText(GROUP));
 const sshdSettings = async () => parseSshdT((await probe('sshd', ['-T'])).stdout);
 const fail = (message, status = 400) => Object.assign(new Error(message), { status });
 
@@ -272,22 +309,24 @@ export async function addKey(keyLine) {
 export async function removeKey(user, fingerprint) {
   const acct = (await accounts()).find((u) => u.name === user);
   if (!acct) throw fail(`no such account: ${user}`, 404);
-  const file = keysFile(acct.home);
-  const lines = (await readText(file)).split('\n');
-  const keep = [];
-  let removed = null, left = 0;
-  for (const raw of lines) {
-    const line = raw.trim();
-    const k = line && !line.startsWith('#') ? await fingerprintOf(line) : null;
-    if (k && k.fingerprint === fingerprint && !removed) { removed = k; continue; }
-    if (k) left++;
-    keep.push(raw);
+  let removed = null, left = 0, hit = null;
+  for (const file of keysFiles(acct.home)) {
+    const keep = [];
+    let here = false;
+    for (const raw of (await readText(file)).split('\n')) {
+      const line = raw.trim();
+      const k = line && !line.startsWith('#') ? await fingerprintOf(line) : null;
+      if (k && k.fingerprint === fingerprint && !removed) { removed = k; here = true; continue; }
+      if (k) left++;
+      keep.push(raw);
+    }
+    if (here) hit = { file, text: keep.join('\n').replace(/\n*$/, '\n') };
   }
   if (!removed) throw fail('that key is not installed for this account', 404);
   if (user === 'root' && left === 0 && (await sshdSettings()).passwordauthentication === 'no') {
     throw fail('this is root\'s last key and password login is off — removing it would lock you out. Add another key first.');
   }
-  await fs.writeFile(file, keep.join('\n').replace(/\n*$/, '\n'), { mode: 0o600 });
+  await fs.writeFile(hit.file, hit.text, { mode: 0o600 });
   console.log(`[security] key removed for ${user}: ${removed.type} ${removed.fingerprint} ${removed.comment}`);
   return removed;
 }
@@ -362,10 +401,16 @@ export async function collectSecurity() {
     probe('systemctl', ['is-active', 'fail2ban']), probe('fail2ban-client', ['status', 'sshd']),
     probe('/usr/lib/update-notifier/apt-check'), readText('/etc/apt/apt.conf.d/20auto-upgrades'), readText('/etc/os-release'),
   ]);
-  const users = [];
-  for (const u of accts.filter((a) => a.uid === 0 || (a.login && a.uid >= 1000 && a.uid < 65000))) {
-    users.push({ ...u, keys: await listKeys(u.home) });
+  // Every account is checked for keys — a key on a service account is the thing to find.
+  // Reported: accounts that can log in, hold a key, have root's id, or may sudo.
+  const users = [], known = new Set();
+  for (const a of accts) {
+    for (const f of keysFiles(a.home)) known.add(path.resolve(f));
+    const keys = a.home && a.home !== '/' && a.home !== '/nonexistent' ? await listKeys(a.home) : [];
+    if (a.uid === 0 || a.login || keys.length || a.sudo) users.push({ ...a, keys });
   }
+  const found = await probe('find', [...KEY_SEARCH, '-xdev', '-maxdepth', '6', '-type', 'f', '(', '-name', 'authorized_keys', '-o', '-name', 'authorized_keys2', ')']);
+  const strayKeyFiles = found.stdout.split('\n').filter(Boolean).map((f) => path.resolve(f)).filter((f) => !known.has(f)).slice(0, 20);
   const ufw = { installed: ufwOut.code !== 127, ...parseUfw(ufwOut.stdout) };
   const listening = parseListening(ss.stdout);
   const exposed = listening.filter((l) => (l.scope === 'all' || l.scope === 'public') && ufwAllowsPublic(ufw, l.port));
@@ -377,7 +422,7 @@ export async function collectSecurity() {
     at: new Date().toISOString(),
     os: /^PRETTY_NAME="?([^"\n]+)"?/m.exec(osRelease)?.[1] || null,
     ssh: Object.fromEntries(['port', 'permitrootlogin', 'passwordauthentication', 'pubkeyauthentication', 'kbdinteractiveauthentication', 'maxauthtries', 'x11forwarding', 'permitemptypasswords', 'logingracetime'].map((k) => [k, ssh[k] ?? null])),
-    users,
+    users, accounts: accts.length, strayKeyFiles,
     logins: { accepted: log.accepted.slice(0, 200), failed: { total: log.failed.total, byIp: log.failed.byIp.slice(0, 25) } },
     firewall: { installed: ufw.installed, active: ufw.active, rules: ufw.rules.map((r) => r.raw) },
     fail2ban: {

@@ -315,7 +315,11 @@ It reports facts and the findings drawn from them:
   a login account (type, size, fingerprint, comment — never the key body), the
   successful logins in the journal (when, account, password or key, address, key
   fingerprint) and failed attempts grouped by address, including refused keys.
-- **Accounts**: a second uid-0 account, an empty password.
+- **Accounts**: every account that can log in, holds a key, has uid 0 or may
+  sudo, with its keys from both `authorized_keys` and `authorized_keys2`. Flagged:
+  a second uid-0 account, an empty password, a key or usable password on a
+  service account, an account created or changed in the last 14 days, sudo
+  members, and an `authorized_keys` file outside any account's home.
 - **Firewall, fail2ban, listening ports** and which ports the internet can reach.
 - **Updates**: pending security updates, automatic updates, restart pending.
 - **Web user**: shell, password, own crontab, PHP files inside uploads folders,
