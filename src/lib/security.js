@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import config from '../config.js';
 import { run, pathExists } from './sys.js';
+import { allowlist } from './proxies.js';
 
 // ============================================================
 //  security.js — read-only security audit of this server
@@ -174,6 +175,15 @@ export function parseAccounts(passwd, shadow = '', group = '') {
   }));
 }
 
+/** `fail2ban-client banned` ("[{'sshd': ['1.2.3.4']}, {'recidive': []}]") -> [{ jail, ip }] */
+export function parseF2bBanned(text) {
+  const out = [];
+  for (const m of String(text).matchAll(/'([^']+)':\s*\[([^\]]*)\]/g)) {
+    for (const ip of m[2].matchAll(/'([^']+)'/g)) out.push({ jail: m[1], ip: ip[1] });
+  }
+  return out;
+}
+
 const SENSITIVE = { 3306: 'MySQL/MariaDB', 6379: 'Redis', 11211: 'Memcached', 27017: 'MongoDB', 9200: 'Elasticsearch', 5432: 'PostgreSQL' };
 
 /**
@@ -215,7 +225,17 @@ export function findingsFrom(f) {
   const failed = f.logins?.failed?.total || 0;
   const f2b = f.fail2ban || {};
   if (!f2b.active) add(passwordOn ? 'high' : 'medium', 'fail2ban', f2b.installed ? 'fail2ban is installed but not running' : 'Nothing bans repeated failed logins', `${failed} failed SSH attempt(s) in the log. fail2ban blocks an address after a few failures.`, 'fail2ban');
-  else if (failed > 500) add('low', 'ssh-noise', `${failed} failed SSH attempts in the log`, `fail2ban is running (${f2b.banned ?? 0} address(es) banned now). Keys-only login makes these harmless.`);
+  const px = f.proxies || {};
+  const bannedProxies = (f2b.bans || []).filter((b) => (px.list || []).includes(b.ip));
+  if (bannedProxies.length) add('high', 'proxy-banned', `A proxy in front of the sites is banned: ${[...new Set(bannedProxies.map((b) => b.ip))].join(', ')}`, `Every visitor reaches this server through it, so every site here is unreachable (visitors see 403 from the proxy). Banned by ${[...new Set(bannedProxies.map((b) => b.jail))].join(', ')}. This fix lifts the ban and leaves only the SSH jail on.`, 'fail2ban');
+  if (px.untrustedBy?.length) add('medium', 'proxy-realip', `${px.untrustedBy.length} site(s) do not trust every proxy for the visitor's real address`, `To nginx, visitors arriving through an untrusted proxy all look like that proxy: logs, rate limits and bans then hit the proxy instead of the visitor. First: ${px.untrustedBy.slice(0, 3).join(', ')}.`, 'trusted-proxies');
+  const webJails = (f2b.jails || []).filter((j) => j !== 'sshd');
+  if (f2b.active && webJails.length) {
+    add('high', 'fail2ban-web', `fail2ban is watching web traffic (${webJails.join(', ')})`,
+      'These sites are reached through a proxy, so every visitor arrives from the proxy\'s address. Web jails ban that address and take every site on the server offline'
+      + ((f2b.bans || []).some((b) => b.jail !== 'sshd') ? ` — ${f2b.bans.filter((b) => b.jail !== 'sshd').map((b) => `${b.ip} is banned by ${b.jail} right now`).join('; ')}` : '') + '. This fix leaves only the SSH jail on and clears those bans.', 'fail2ban');
+  }
+  if (f2b.active && failed > 500) add('low', 'ssh-noise', `${failed} failed SSH attempts in the log`, `fail2ban is running (${f2b.banned ?? 0} address(es) banned now). Keys-only login makes these harmless.`);
 
   const fw = f.firewall || {};
   if (!fw.active) add('high', 'firewall', fw.installed ? 'The firewall is off' : 'No firewall is installed', 'Every listening port is reachable from the internet. Turn ufw on with SSH, web and the agent (tailnet only) allowed.', 'firewall');
@@ -251,8 +271,10 @@ export function findingsFrom(f) {
   if (ag.allowlist === 0) add('high', 'agent-allowlist', 'The agent accepts connections from any address', 'Set AGENT_ALLOWED_IPS to the portal\'s Tailscale address.');
   if (ag.envMode && ag.envMode !== '600') add('medium', 'agent-env', `The agent's .env is mode ${ag.envMode}`, 'It holds the agent key and deploy secrets; it should be 600.', 'env-perms');
 
+  // An outage or a break-in in progress comes before everything else, whatever the order above.
+  const URGENT = /^(proxy-banned|db-udf-loaded|db-udf-files|uploads-php|tmp-exec)$/;
   const rank = { high: 0, medium: 1, low: 2 };
-  return out.sort((a, b) => rank[a.severity] - rank[b.severity]);
+  return out.sort((a, b) => (URGENT.test(b.id) - URGENT.test(a.id)) || rank[a.severity] - rank[b.severity]);
 }
 
 // ---------- authorized keys --------------------------------------------------
@@ -382,6 +404,19 @@ async function dbFacts() {
   };
 }
 
+/** Which sites' nginx config does not name every trusted proxy? */
+async function proxyFacts() {
+  const untrustedBy = [];
+  const TRUSTED_PROXIES = await allowlist();
+  let dirs = [];
+  try { dirs = await fs.readdir(config.wwwDir); } catch { /* no sites */ }
+  for (const d of dirs) {
+    const conf = await readText(`${config.wwwDir}/${d}/conf/nginx/custom-cache.conf`);
+    if (conf && !TRUSTED_PROXIES.every((ip) => conf.includes(`set_real_ip_from ${ip};`))) untrustedBy.push(d);
+  }
+  return { list: TRUSTED_PROXIES, untrustedBy };
+}
+
 async function envWorldReadable() {
   const out = [];
   let dirs = [];
@@ -395,10 +430,11 @@ async function envWorldReadable() {
 
 /** Every fact the audit reports, plus the findings drawn from them. */
 export async function collectSecurity() {
-  const [ssh, accts, log, ufwOut, ss, f2bActive, f2bStatus, aptCheck, autoConf, osRelease] = await Promise.all([
+  const [ssh, accts, log, ufwOut, ss, f2bActive, f2bStatus, f2bJails, f2bBanned, aptCheck, autoConf, osRelease] = await Promise.all([
     sshdSettings(), accounts(), sshLog(),
     probe('ufw', ['status']), probe('ss', ['-tlnpH']),
     probe('systemctl', ['is-active', 'fail2ban']), probe('fail2ban-client', ['status', 'sshd']),
+    probe('fail2ban-client', ['status']), probe('fail2ban-client', ['banned']),
     probe('/usr/lib/update-notifier/apt-check'), readText('/etc/apt/apt.conf.d/20auto-upgrades'), readText('/etc/os-release'),
   ]);
   // Every account is checked for keys — a key on a service account is the thing to find.
@@ -428,6 +464,8 @@ export async function collectSecurity() {
     fail2ban: {
       installed: f2bStatus.code !== 127, active: f2bActive.stdout.trim() === 'active',
       banned: Number(/Currently banned:\s*(\d+)/.exec(f2bStatus.stdout)?.[1] ?? 0), totalBanned: Number(/Total banned:\s*(\d+)/.exec(f2bStatus.stdout)?.[1] ?? 0),
+      jails: (/Jail list:\s*(.*)$/m.exec(f2bJails.stdout)?.[1] || '').split(',').map((s) => s.trim()).filter(Boolean),
+      bans: parseF2bBanned(f2bBanned.stdout),
     },
     listening, exposed,
     updates: {
@@ -436,6 +474,7 @@ export async function collectSecurity() {
       rebootRequired: await pathExists('/var/run/reboot-required'),
     },
     wwwData: await wwwFacts(accts.find((a) => a.name === 'www-data')),
+    proxies: await proxyFacts(),
     database: await dbFacts(),
     sites: { envWorldReadable: await envWorldReadable() },
     agent: { host: config.host, port: config.port, allowlist: config.allowedIps.length, envMode, tokenLength: config.authToken.length },

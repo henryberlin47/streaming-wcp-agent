@@ -1,9 +1,9 @@
-import net from 'node:net';
 import config from '../config.js';
 import { run } from '../lib/sys.js';
 import { logger } from '../lib/log.js';
 import { parseUfw, parseSshdT, ruleAllows } from '../lib/security.js';
 import { enableFirewall } from './harden.js';
+import { validAddress } from '../lib/proxies.js';
 
 // ============================================================
 //  firewall — manage ufw from the panel
@@ -34,14 +34,7 @@ const portRange = (s) => {
   const lo = Number(m[1]), hi = m[2] ? Number(m[2]) : lo;
   return lo >= 1 && hi <= 65535 && lo <= hi ? [lo, hi] : null;
 };
-/** "1.2.3.4", "10.0.0.0/8", "2001:db8::/32" -> normalized string, or null */
-const source = (s) => {
-  const [addr, bits, extra] = String(s).split('/');
-  const v = net.isIP(addr);
-  if (!v || extra !== undefined) return null;
-  if (bits === undefined) return addr;
-  return /^\d{1,3}$/.test(bits) && Number(bits) <= (v === 4 ? 32 : 128) ? `${addr}/${Number(bits)}` : null;
-};
+const source = validAddress;
 
 export function validateFirewall(p = {}) {
   const errors = [];

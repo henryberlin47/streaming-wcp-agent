@@ -23,12 +23,24 @@ printf 'port 22\\npasswordauthentication yes\\nkbdinteractiveauthentication yes\
 stub("journalctl", `cat "${sshlog}" 2>/dev/null`);
 stub("systemctl", `echo "$*" >> "${base}/systemctl"`);
 stub("mysql", `case "$*" in *mysql.func*) printf 'sys_exec\\tlib_mysqludf_sys.so\\n';; *mysql.user*) printf 'root\\t%%\\napp\\t%%\\n';; esac`);
-stub("dpkg", "exit 0"); // everything "already installed": no apt in a test
+stub("dpkg", "exit 0");
+stub("nginx", `[ -f "${base}/nginx-t-fails" ] && { echo "nginx: [emerg] bad" >&2; exit 1; }; exit 0`); // everything "already installed": no apt in a test
+// fail2ban-client: -d lists the jails the configuration would start (minus those wcp.local switches off), status lists them as running
+fs.writeFileSync(path.join(bin, "fail2ban-client"), `#!/usr/bin/env node
+const fs = require("fs"); const a = process.argv.slice(2);
+const all = ["sshd", "nginx-botsearch", "nginx-forbidden", "recidive", "wo-wordpress"];
+let off = []; try { off = [...fs.readFileSync(${JSON.stringify(path.join(base, "jail.d/wcp.local"))}, "utf8").matchAll(/\\[([^\\]]+)\\]\\nenabled = false/g)].map((m) => m[1]); } catch {}
+const on = fs.existsSync(${JSON.stringify(path.join(base, "f2b-ignores-overrides"))}) ? all : all.filter((j) => !off.includes(j));
+fs.appendFileSync(${JSON.stringify(path.join(base, "f2b-calls"))}, a.join(" ") + "\\n");
+if (a[0] === "-d") on.forEach((j) => console.log("['add', '" + j + "', 'auto']"));
+else if (a[0] === "status" && !a[1]) console.log("Status\\n|- Number of jail:\\t" + on.length + "\\n\`- Jail list:\\t" + on.join(", "));
+else if (a[0] === "banned") console.log("[{'sshd': ['92.118.39.77']}, {'recidive': ['179.43.144.186']}]");
+`); fs.chmodSync(path.join(bin, "fail2ban-client"), 0o755);
 stub("ufw", `echo "$*" >> "${base}/ufw"; [ "$1" = status ] && echo "Status: inactive"; exit 0`);
 stub("ss", `echo 'LISTEN 0 511 0.0.0.0:22222 0.0.0.0:* users:(("nginx",pid=1,fd=6))'`);
 Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENT_PASSWD_FILE: passwd, AGENT_SHADOW_FILE: shadow, AGENT_GROUP_FILE: group, AGENT_KEY_SEARCH_DIRS: base, AGENT_SSHD_DROPIN_DIR: dropins,
   AGENT_F2B_JAIL_DIR: path.join(base, "jail.d"), AGENT_APT_CONF_DIR: path.join(base, "apt.conf.d"), AGENT_WWW_DIR: path.join(base, "www"), AGENT_ENV_FILE: path.join(base, "agent.env"),
-  AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_TOKEN: "t".repeat(64) });
+  AGENT_ALLOWLIST_FILE: path.join(base, "allowlist.txt"), AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_TOKEN: "t".repeat(64) });
 
 const S = await import(path.join(A, "src/lib/security.js"));
 const { operations } = await import(path.join(A, "src/operations/index.js"));
@@ -145,16 +157,51 @@ console.log("4. keys-only: refused without a key, without a proven key login, on
 fs.mkdirSync(path.join(base, "www/a.com/htdocs/src"), { recursive: true });
 const siteEnv = path.join(base, "www/a.com/htdocs/src/.env"); fs.writeFileSync(siteEnv, "X=1\n", { mode: 0o644 }); fs.chmodSync(siteEnv, 0o644);
 fs.writeFileSync(path.join(base, "agent.env"), "AGENT_TOKEN=x\n"); fs.chmodSync(path.join(base, "agent.env"), 0o644);
+// the proxies in front: trusted by nginx for real addresses, named in the firewall, never banned
+const OLD_CONF = "location / {}\nset_real_ip_from 45.135.237.4;\nset_real_ip_from 45.135.237.5;\nreal_ip_header X-Forwarded-For;\n";
+fs.mkdirSync(path.join(base, "www/a.com/conf/nginx"), { recursive: true });
+const cc = path.join(base, "www/a.com/conf/nginx/custom-cache.conf"); fs.writeFileSync(cc, OLD_CONF);
+fs.writeFileSync(path.join(base, "nginx-t-fails"), "");
+await assert.rejects(harden("trusted-proxies"), /nginx rejected the new proxy list — every file was put back/);
+assert.equal(fs.readFileSync(cc, "utf8"), OLD_CONF, "rolled back");
+fs.rmSync(path.join(base, "nginx-t-fails"));
+// the panel sends its allowlist with the action; it is stored and used by everything after
+assert.equal(operations.harden.validate({ actions: ["trusted-proxies"], allowlist: ["1.2.3.4; reboot"] }).ok, false, "only addresses and networks are accepted");
+assert.equal(operations.harden.validate({ actions: ["trusted-proxies"], allowlist: "1.2.3.4" }).ok, false);
+const LIST = ["45.135.237.4", "103.28.89.157", "45.135.237.15", "179.43.144.186"];
+await operations.harden.run({ id: "j" }, helpers, operations.harden.validate({ actions: ["trusted-proxies"], allowlist: [...LIST, "198.51.100.0/24"] }).clean);
+assert.match(fs.readFileSync(path.join(base, "ufw"), "utf8"), /allow from 198\.51\.100\.0\/24/);
+await operations.harden.run({ id: "j" }, helpers, operations.harden.validate({ actions: ["trusted-proxies"], allowlist: LIST }).clean); // one taken off again
+assert.match(fs.readFileSync(path.join(base, "ufw"), "utf8"), /delete allow from 198\.51\.100\.0\/24/, "an address taken off the list loses its firewall rule");
+assert.ok(!fs.readFileSync(cc, "utf8").includes("198.51.100"), "…and nginx's trust");
+assert.equal(fs.readFileSync(path.join(base, "allowlist.txt"), "utf8"), LIST.join("\n") + "\n");
+assert.match(fs.readFileSync(path.join(base, "jail.d/wcp-allow.local"), "utf8"), /ignoreip = 127\.0\.0\.1\/8 ::1 100\.64\.0\.0\/10 45\.135\.237\.4 103\.28\.89\.157 45\.135\.237\.15 179\.43\.144\.186\n/, "never banned");
+for (const ip of ["45.135.237.4", "103.28.89.157", "45.135.237.15", "179.43.144.186"]) assert.ok(fs.readFileSync(cc, "utf8").includes(`set_real_ip_from ${ip};`), `nginx trusts ${ip}`);
+assert.ok(!fs.readFileSync(cc, "utf8").includes("{{"), "no unfilled placeholder reaches nginx");
+assert.match(fs.readFileSync(path.join(base, "systemctl"), "utf8"), /reload nginx/);
 await harden("fail2ban", "auto-updates", "firewall", "ssh-basics", "env-perms");
-assert.match(fs.readFileSync(path.join(base, "jail.d/wcp-sshd.conf"), "utf8"), /enabled = true[\s\S]*ignoreip = .*100\.64\.0\.0\/10/);
+// fail2ban: the SSH jail and NOTHING else. A web jail behind a proxy bans the proxy and takes every site down.
+const f2b = fs.readFileSync(path.join(base, "jail.d/wcp.local"), "utf8");
+assert.match(f2b, /\[sshd\]\nenabled = true/);
+for (const j of ["nginx-botsearch", "nginx-forbidden", "recidive", "wo-wordpress"]) assert.ok(f2b.includes(`[${j}]\nenabled = false`), `${j} is switched off`);
+assert.match(lines.join("\n"), /switched OFF: nginx-botsearch, nginx-forbidden, recidive, wo-wordpress/);
+const f2bCalls = fs.readFileSync(path.join(base, "f2b-calls"), "utf8").split("\n");
+assert.ok(f2bCalls.indexOf("-d") < f2bCalls.indexOf("status"), "the jail list is read from the configuration before anything is started");
+assert.ok(f2bCalls.includes("unban --all"), "bans left by the web jails are cleared");
+// if the override does not hold, fail2ban is stopped again rather than left running with web jails
+fs.writeFileSync(path.join(base, "f2b-ignores-overrides"), ""); fs.writeFileSync(path.join(base, "systemctl"), "");
+await assert.rejects(harden("fail2ban"), /instead of the SSH jail alone, so it was stopped again/);
+assert.match(fs.readFileSync(path.join(base, "systemctl"), "utf8"), /stop fail2ban\ndisable fail2ban/);
+fs.rmSync(path.join(base, "f2b-ignores-overrides"));
 assert.match(fs.readFileSync(path.join(base, "apt.conf.d/20auto-upgrades"), "utf8"), /Unattended-Upgrade "1"/);
 const ufwCalls = fs.readFileSync(path.join(base, "ufw"), "utf8").split("\n");
 assert.ok(ufwCalls.indexOf("allow 22/tcp") >= 0 && ufwCalls.indexOf("allow 22/tcp") < ufwCalls.indexOf("--force enable"), "SSH is allowed BEFORE the firewall is turned on");
 assert.ok(ufwCalls.includes("allow in on tailscale0 to any port 8787 proto tcp"));
+assert.ok(ufwCalls.includes("allow from 179.43.144.186"), "each allowlisted address is allowed by name");
 assert.match(lines.join("\n"), /will now be BLOCKED from the internet: 22222 \(nginx\)/, "says which public ports the firewall will cut");
 assert.match(fs.readFileSync(path.join(dropins, "00-wcp-basics.conf"), "utf8"), /MaxAuthTries 3/);
 assert.equal(fs.statSync(siteEnv).mode & 0o777, 0o640); assert.equal(fs.statSync(path.join(base, "agent.env")).mode & 0o777, 0o600);
-console.log("5. fail2ban, auto-updates, firewall (SSH allowed first), SSH limits, .env permissions");
+console.log("5. fail2ban (SSH jail only; web jails off, or stopped if that fails), auto-updates, firewall (SSH allowed first), SSH limits, .env permissions");
 
 fs.mkdirSync(path.join(base, "mysql")); fs.mkdirSync(path.join(base, "tmp"));
 fs.writeFileSync(path.join(base, "mysql/lib_mysqludf_sys.so"), "x"); fs.writeFileSync(path.join(base, "tmp/pt7408.so"), "x"); fs.writeFileSync(path.join(base, "mysql/ibdata1"), "x");
@@ -176,6 +223,15 @@ assert.ok(!JSON.stringify(audit).includes("$6$hash"), "no password hash in the r
 assert.deepEqual(audit.database.droppedLibs.map((p) => path.basename(p)).sort(), ["lib_mysqludf_sys.so", "pt7408.so"]);
 for (const id of ["db-udf-loaded", "db-udf-files", "db-open-root", "db-open-app"]) assert.ok(audit.findings.some((f) => f.id === id), `finds ${id}`);
 assert.equal(audit.findings.find((f) => f.id === "db-open-root").severity, "high"); assert.equal(audit.findings.find((f) => f.id === "db-open-app").severity, "medium");
+assert.deepEqual(S.parseF2bBanned("[{'sshd': ['92.118.39.77', '2.57.121.25']}, {'nginx-http-auth': []}, {'recidive': ['179.43.144.186']}]"), [{ jail: "sshd", ip: "92.118.39.77" }, { jail: "sshd", ip: "2.57.121.25" }, { jail: "recidive", ip: "179.43.144.186" }]);
+const web = S.findingsFrom({ fail2ban: { active: true, jails: ["nginx-botsearch", "recidive", "sshd"], bans: [{ jail: "recidive", ip: "179.43.144.186" }] } }).find((f) => f.id === "fail2ban-web");
+assert.equal(web.severity, "high"); assert.equal(web.fix, "fail2ban"); assert.match(web.detail, /179\.43\.144\.186 is banned by recidive right now/);
+assert.ok(!S.findingsFrom({ fail2ban: { active: true, jails: ["sshd"], bans: [] }, firewall: { active: true } }).some((f) => f.id === "fail2ban-web"));
+// exactly what happened: the proxy banned by recidive -> every site on the server unreachable
+const pb = S.findingsFrom({ proxies: { list: ["179.43.144.186"], untrustedBy: ["a.com"] }, fail2ban: { active: true, jails: ["sshd", "recidive"], bans: [{ jail: "recidive", ip: "179.43.144.186" }, { jail: "sshd", ip: "92.118.39.77" }] } });
+assert.equal(pb[0].id, "proxy-banned"); assert.equal(pb[0].fix, "fail2ban"); assert.equal(pb.find((f) => f.id === "proxy-realip").fix, "trusted-proxies");
+assert.deepEqual(audit.proxies.untrustedBy, [], "after the fix every site trusts every proxy");
+assert.ok(audit.findings.some((f) => f.id === "proxy-banned"), "the audit sees the banned proxy on the fake box");
 console.log("6. audit: collects and reports without a hash or a key body; flags a database attack (dropped .so, loaded function, root@%)");
 
 // ---- 6) wrong keys lock an address out ----------------------------------------------------------

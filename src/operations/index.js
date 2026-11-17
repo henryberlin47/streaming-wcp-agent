@@ -18,6 +18,7 @@ import { runScan } from './scan.js';
 import { runPhpUpgrade } from './phpupgrade.js';
 import { runDbCreds } from './dbcreds.js';
 import { runHarden, ACTIONS as HARDEN_ACTIONS } from './harden.js';
+import { validAddress } from '../lib/proxies.js';
 import { runFirewall, validateFirewall } from './firewall.js';
 import { readS3Params } from '../lib/s3.js';
 import { KINDS as BACKUP_KINDS } from './dbbackup.js';
@@ -349,8 +350,16 @@ const harden = {
   validate(p = {}) {
     const actions = Array.isArray(p.actions) ? [...new Set(p.actions.map(String))] : [];
     const bad = actions.filter((a) => !HARDEN_ACTIONS.includes(a));
-    const ok = actions.length > 0 && bad.length === 0;
-    return { ok, errors: ok ? [] : [`actions must be one or more of: ${HARDEN_ACTIONS.join(', ')}`], clean: { actions } };
+    const errors = actions.length > 0 && bad.length === 0 ? [] : [`actions must be one or more of: ${HARDEN_ACTIONS.join(', ')}`];
+    // optional: the panel's allowlist, stored before the actions run
+    let allowlist;
+    if (p.allowlist !== undefined) {
+      const raw = Array.isArray(p.allowlist) ? p.allowlist : [null];
+      const wrong = raw.filter((x) => !validAddress(x));
+      if (wrong.length || raw.length > 100) errors.push(`allowlist must be up to 100 IP addresses or networks${wrong.length ? ` (not valid: ${wrong.map(String).slice(0, 3).join(', ')})` : ''}`);
+      else allowlist = raw.map(validAddress);
+    }
+    return { ok: errors.length === 0, errors, clean: { actions, ...(allowlist && { allowlist }) } };
   },
   async run(job, helpers, p) {
     await runHarden(job, helpers, p);

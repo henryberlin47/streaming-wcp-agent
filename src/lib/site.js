@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { allowlist } from './proxies.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import config from '../config.js';
@@ -79,11 +80,16 @@ ${redirect}`;
   await fs.rm(enabled, { force: true });
   await fs.symlink(available, enabled);
 
-  // custom-cache.conf include (verbatim template)
+  // custom-cache.conf include (the shared template, same for every site)
   const confDir = `${siteDir}/conf/nginx`;
   await fs.mkdir(confDir, { recursive: true });
-  const cacheBody = await fs.readFile(CACHE_CONF_TEMPLATE, 'utf8');
-  await fs.writeFile(`${confDir}/custom-cache.conf`, cacheBody);
+  await fs.writeFile(`${confDir}/custom-cache.conf`, await cacheConf());
+}
+
+/** The per-site custom-cache.conf: the template with the trusted proxies filled in. */
+export async function cacheConf() {
+  const tpl = await fs.readFile(CACHE_CONF_TEMPLATE, 'utf8');
+  return tpl.replace('{{TRUSTED_PROXIES}}', (await allowlist()).map((ip) => `set_real_ip_from ${ip};`).join('\n'));
 }
 
 // ---- Cron on/off (backup sites) ---------------------------------------------

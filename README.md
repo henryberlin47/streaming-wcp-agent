@@ -355,3 +355,28 @@ lets the portal reach the agent, and opening the agent's own port to the
 internet. `delete` needs the rule's text as well as its number, because numbers
 shift when a rule is removed. `enable` allows SSH, web, Tailscale and the agent
 (tailnet only) before it switches ufw on, and names the public ports it cuts.
+
+## Always-allowed addresses (the panel's allowlist)
+
+The proxies in front of the sites, plus anything the operator adds in the panel
+(`src/lib/proxies.js`). Every visitor reaches nginx **through** the proxies, so
+on each server these addresses are never banned (fail2ban `ignoreip`, in
+`jail.d/wcp-allow.local`), always let through the firewall (one `ufw allow from`
+rule each) and trusted by nginx for the visitor's real address
+(`set_real_ip_from` in every site's `custom-cache.conf`).
+
+The panel sends the list as `allowlist` with every `harden` operation; the agent
+stores it in `allowlist.txt` beside itself (so deploys use it too) and falls
+back to a built-in default until it has been sent one. The `trusted-proxies`
+action applies it: rewrites the sites' includes (nginx is tested, and every file
+is put back if it fails), names each address in ufw, removes the rules of
+addresses taken off the list, and lifts any ban on them.
+
+**The `fail2ban` action runs the SSH jail only.** Jails that watch web traffic
+count the whole internet's bad requests against the proxy's address and ban it;
+`recidive` then bans it on every port for a week, and every site on the server
+answers 403 from the proxy. That happened on 17 Nov 2026 when this action simply
+started fail2ban and WordOps' preconfigured nginx jails came up with it. The
+action now reads the jail list from the configuration without starting anything,
+switches every non-SSH jail off in `jail.d/wcp.local`, verifies only `sshd` is
+running, and stops fail2ban again if anything else came up.
