@@ -299,3 +299,55 @@ site's recorded root domain (`SITE_ROOT_DOMAIN`) again and rewrites `DB_HOST`,
 `DB_NAME`, `DB_USER`, `DB_PASSWORD` in the site's `.env` where they differ, then
 clears the site's caches. Use it after the map changed (database moved, password
 rotated). Nothing else in the `.env` is touched; the password is never logged.
+
+The map's credentials are **tested from this server first** (a real `mysql`
+connection to that database). If they do not connect, the job fails and the
+`.env` is left exactly as it was — a stale map entry cannot take a working site
+down. On success the previous `.env` is kept beside it as `.env.before-dbcreds`
+(0600, outside the webroot).
+
+## Security audit and hardening
+
+`GET /api/security` is a read-only audit of this server (`src/lib/security.js`).
+It reports facts and the findings drawn from them:
+
+- **SSH**: effective settings (`sshd -T`), every key allowed to log in as root or
+  a login account (type, size, fingerprint, comment — never the key body), the
+  successful logins in the journal (when, account, password or key, address, key
+  fingerprint) and failed attempts grouped by address, including refused keys.
+- **Accounts**: a second uid-0 account, an empty password.
+- **Firewall, fail2ban, listening ports** and which ports the internet can reach.
+- **Updates**: pending security updates, automatic updates, restart pending.
+- **Web user**: shell, password, own crontab, PHP files inside uploads folders,
+  programs or scripts it owns in temp folders.
+- **Database**: library files where MySQL can write, foreign functions loaded
+  (`mysql.func`), accounts open to any address — the marks of a UDF attack.
+- **Agent**: bind address, allowlist, `.env` mode.
+
+`POST /api/security/keys/add { key }` installs a public key for root (a bare key
+line only — no options); `POST /api/security/keys/remove { user, fingerprint }`
+removes one. Removing root's last key is refused while password login is off.
+
+`POST /api/op/harden { actions: [...] }` applies fixes, each idempotent:
+`fail2ban`, `auto-updates`, `firewall`, `ssh-basics`, `env-perms`,
+`ssh-keys-only`. **`ssh-keys-only` turns SSH password login off and refuses
+unless root has a key installed and the SSH log shows a successful key login
+for root** — proof the key works. Every sshd change is a drop-in that is
+syntax-checked, read back and removed again if it did not take effect; ssh is
+reloaded, not restarted, so open sessions stay open. `firewall` allows SSH
+before it switches ufw on and names the public ports it will cut.
+
+The agent itself now locks an address out for 15 minutes after 10 wrong keys,
+logs why each caller was refused, logs every job's start and end, and keeps its
+`.env` at mode 600. In the log view, `sudo`'s lines are hidden unless `?all=1`.
+
+## Firewall
+
+`GET /api/firewall` lists ufw's state and numbered rules. `POST /api/op/firewall`
+changes it: `{ action: "allow", port, proto?, from?, tailnet? }`,
+`{ action: "delete", number, raw }`, `{ action: "enable" }`, `{ action: "disable" }`.
+Refused: removing the last rule that lets SSH in, removing the last rule that
+lets the portal reach the agent, and opening the agent's own port to the
+internet. `delete` needs the rule's text as well as its number, because numbers
+shift when a rule is removed. `enable` allows SSH, web, Tailscale and the agent
+(tailnet only) before it switches ufw on, and names the public ports it cuts.

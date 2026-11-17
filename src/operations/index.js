@@ -17,6 +17,8 @@ import { runDbBackup, runDbRestore } from './dbbackup.js';
 import { runScan } from './scan.js';
 import { runPhpUpgrade } from './phpupgrade.js';
 import { runDbCreds } from './dbcreds.js';
+import { runHarden, ACTIONS as HARDEN_ACTIONS } from './harden.js';
+import { runFirewall, validateFirewall } from './firewall.js';
 import { readS3Params } from '../lib/s3.js';
 import { KINDS as BACKUP_KINDS } from './dbbackup.js';
 import { checkCertPair } from '../lib/cert.js';
@@ -329,6 +331,33 @@ const root = {
 };
 
 // ============================================================
+//  firewall — manage ufw: { action: allow|delete|enable|disable, … }
+// ============================================================
+const firewall = {
+  name: 'firewall',
+  validate: validateFirewall,
+  async run(job, helpers, p) {
+    await runFirewall(job, helpers, p);
+  },
+};
+
+// ============================================================
+//  harden — apply security fixes from the audit: { actions: [...] }
+// ============================================================
+const harden = {
+  name: 'harden',
+  validate(p = {}) {
+    const actions = Array.isArray(p.actions) ? [...new Set(p.actions.map(String))] : [];
+    const bad = actions.filter((a) => !HARDEN_ACTIONS.includes(a));
+    const ok = actions.length > 0 && bad.length === 0;
+    return { ok, errors: ok ? [] : [`actions must be one or more of: ${HARDEN_ACTIONS.join(', ')}`], clean: { actions } };
+  },
+  async run(job, helpers, p) {
+    await runHarden(job, helpers, p);
+  },
+};
+
+// ============================================================
 //  dbcreds — re-pull a live site's DB credentials from the map: { domain }
 // ============================================================
 const dbcreds = {
@@ -591,7 +620,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, dbcreds, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;

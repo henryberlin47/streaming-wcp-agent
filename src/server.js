@@ -15,7 +15,10 @@ import { wpUsers } from './lib/wpusers.js';
 import { listBackups, testStorage } from './operations/dbbackup.js';
 import { reportFor } from './operations/scan.js';
 import { phpVersion } from './operations/phpupgrade.js';
-import { SERVICE } from './operations/selfupdate.js';
+import { SERVICE, INSTALL_DIR } from './operations/selfupdate.js';
+import { collectSecurity, addKey, removeKey } from './lib/security.js';
+import { firewallStatus } from './operations/firewall.js';
+import fs from 'node:fs';
 import { readS3Params } from './lib/s3.js';
 import { normDomain } from './operations/index.js';
 
@@ -42,6 +45,10 @@ if (problems.length) {
 // Pin the :22222 admin panel to its self-signed cert and lock it immutable, so
 // it can't be repointed at a deletable site cert. Idempotent; best-effort.
 enforceAdminPanelCert().catch((e) => console.error('[agent] panel-cert enforce failed:', e));
+
+// The .env holds the agent key and the deploy secrets: owner-only, always.
+try { fs.chmodSync(process.env.AGENT_ENV_FILE || `${INSTALL_DIR}/.env`, 0o600); } catch { /* not installed the usual way */ }
+process.on('unhandledRejection', (e) => console.error('[agent] unhandled rejection:', e?.stack || e));
 
 const app = express();
 app.disable('x-powered-by');
@@ -190,12 +197,43 @@ app.get('/api/scan/report/:jobId', async (req, res) => {
 // GET /api/agent/log?lines=500 -> the service's journal: starts/stops, crashes,
 // refused keys, the request lines above. (Job output is not here — the portal
 // keeps that per operation.)
+// `sudo` writes three lines for every command the agent runs as www-data (each
+// wp-cli call) — hundreds an hour, and "session opened" reads like a break-in.
+// They are left out unless ?all=1, and extra lines are read to make up for them.
 app.get('/api/agent/log', (req, res) => {
   const lines = Math.min(Math.max(parseInt(req.query.lines, 10) || 500, 1), 5000);
-  execFile('journalctl', ['-u', SERVICE, '-n', String(lines), '--no-pager', '-o', 'short-iso'], { maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+  const all = req.query.all === '1';
+  execFile('journalctl', ['-u', SERVICE, '-n', String(all ? lines : Math.min(lines * 8, 40000)), '--no-pager', '-o', 'short-iso'], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) return res.status(500).json({ error: 'journal_failed', message: String(stderr || err.message).slice(0, 500) });
-    res.json({ service: SERVICE, lines, log: stdout });
+    const log = all ? stdout : stdout.split('\n').filter((l) => !/ sudo\[\d+\]: /.test(l)).slice(-lines - 1).join('\n');
+    res.json({ service: SERVICE, lines, all, log });
   });
+});
+
+// --- security audit ---------------------------------------------------------------
+// GET /api/security -> facts + findings (read-only; see lib/security.js)
+app.get('/api/security', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await collectSecurity()); }
+  catch (e) { console.error('[security] audit failed:', e); res.status(500).json({ error: 'audit_failed', message: e?.message || 'failed' }); }
+});
+// GET /api/firewall -> { installed, active, rules: [{ n, to, action, from }], staged: [...] }  (changes are the `firewall` operation)
+app.get('/api/firewall', async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json(await firewallStatus()); }
+  catch (e) { res.status(500).json({ error: 'firewall_failed', message: e?.message || 'failed' }); }
+});
+// POST /api/security/keys/add    { key }                 -> install a public key for root
+// POST /api/security/keys/remove { user, fingerprint }   -> remove one authorized key
+app.post('/api/security/keys/:action', async (req, res) => {
+  const b = req.body || {};
+  try {
+    if (req.params.action === 'add') return res.json({ ok: true, key: await addKey(b.key) });
+    if (req.params.action === 'remove') return res.json({ ok: true, key: await removeKey(String(b.user || ''), String(b.fingerprint || '')) });
+    res.status(404).json({ error: 'unknown_action' });
+  } catch (e) {
+    res.status(e?.status || 500).json({ error: 'key_failed', message: e?.message || 'failed' });
+  }
 });
 
 // --- start an operation -----------------------------------------------------

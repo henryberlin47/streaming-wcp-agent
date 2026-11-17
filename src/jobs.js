@@ -87,10 +87,15 @@ export function appendLog(job, line, stream = 'stdout') {
   job._emitter.emit('line', entry);
 }
 
+// What a job is about, for the journal: its domain if it has one. Never a param value that could be secret.
+const subject = (job) => job.params?.domain || job.params?.aliasDomain || '';
+
 function setState(job, state, reason = null) {
   job.state = state;
   if (reason) job.exitReason = reason;
   if (TERMINAL.has(state)) job.finishedAt = Date.now();
+  if (state === STATE.RUNNING) console.log(`[job] start ${job.type} ${job.id.slice(0, 8)} ${subject(job)}`.trimEnd());
+  if (TERMINAL.has(state)) console.log(`[job] end ${job.type} ${job.id.slice(0, 8)} ${subject(job)} ${state} ${Math.round((job.finishedAt - (job.startedAt || job.createdAt)) / 1000)}s${reason ? ` — ${String(reason).slice(0, 200)}` : ''}`.replace(/  +/g, ' '));
   job._emitter.emit('state', { state, reason });
   if (TERMINAL.has(state)) scheduleCleanup(job);
 }
