@@ -15,7 +15,7 @@ import { listJobs } from '../jobs.js';
 
 // The agent's own checkout (bootstrap installs by `git clone`), wherever it is.
 export const INSTALL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const SERVICE = process.env.AGENT_SERVICE_NAME || 'streaming-agent';
+export const SERVICE = process.env.AGENT_SERVICE_NAME || 'streaming-agent';
 const RESTART_DELAY_S = 5;
 const TERMINAL = new Set(['succeeded', 'failed', 'timeout', 'cancelled']);
 

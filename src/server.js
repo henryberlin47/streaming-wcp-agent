@@ -1,11 +1,11 @@
 import express from 'express';
 import config, { validateConfig } from './config.js';
-import { requireAuth } from './auth.js';
+import { requireAuth, clientIp } from './auth.js';
 import { getOperation, operations } from './operations/index.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
 import { enqueue, getJob, listJobs, publicView, subscribe, cancelJob } from './jobs.js';
 import { woSiteList } from './lib/sys.js';
 import { siteRoles } from './lib/site.js';
@@ -15,6 +15,7 @@ import { wpUsers } from './lib/wpusers.js';
 import { listBackups, testStorage } from './operations/dbbackup.js';
 import { reportFor } from './operations/scan.js';
 import { phpVersion } from './operations/phpupgrade.js';
+import { SERVICE } from './operations/selfupdate.js';
 import { readS3Params } from './lib/s3.js';
 import { normDomain } from './operations/index.js';
 
@@ -46,6 +47,19 @@ const app = express();
 app.disable('x-powered-by');
 if (config.trustProxy) app.set('trust proxy', true);
 app.use(express.json({ limit: '64kb' }));
+
+// --- request log (stdout -> journald; the portal shows it as "Agent log") ----
+// One line per request that changes something or is refused: method, path,
+// status, caller IP. Successful GETs are skipped — the portal's health checks
+// and log polling would drown everything else. Never the body or a header.
+app.use((req, res, next) => {
+  const t = Date.now();
+  res.on('finish', () => {
+    if (req.method === 'GET' && res.statusCode < 400) return;
+    console.log(`[req] ${req.method} ${req.path} ${res.statusCode} ${clientIp(req)} ${Date.now() - t}ms`);
+  });
+  next();
+});
 
 // --- health (unauthenticated, minimal) --------------------------------------
 // Useful for the panel to see the server is up before auth. Reveals nothing.
@@ -170,6 +184,18 @@ app.get('/api/scan/report/:jobId', async (req, res) => {
   res.set('Content-Disposition', `attachment; filename="clamav_${r.name}"`);
   res.set('Cache-Control', 'no-store');
   r.stream().pipe(res);
+});
+
+// --- this agent's own log --------------------------------------------------------
+// GET /api/agent/log?lines=500 -> the service's journal: starts/stops, crashes,
+// refused keys, the request lines above. (Job output is not here — the portal
+// keeps that per operation.)
+app.get('/api/agent/log', (req, res) => {
+  const lines = Math.min(Math.max(parseInt(req.query.lines, 10) || 500, 1), 5000);
+  execFile('journalctl', ['-u', SERVICE, '-n', String(lines), '--no-pager', '-o', 'short-iso'], { maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) return res.status(500).json({ error: 'journal_failed', message: String(stderr || err.message).slice(0, 500) });
+    res.json({ service: SERVICE, lines, log: stdout });
+  });
 });
 
 // --- start an operation -----------------------------------------------------

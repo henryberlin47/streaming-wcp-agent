@@ -282,3 +282,20 @@ at once **alongside** the old key, and restarts itself ~5 s later — after whic
 only the new key works. The overlap lets the portal read the job's result with
 the old key and then switch. Like the other restarting operations it refuses
 while another job is queued. The key is never logged.
+
+## Agent log
+
+`GET /api/agent/log?lines=500` returns this service's journal (`journalctl -u
+streaming-agent`, up to 5000 lines): starts and stops, crashes, and one `[req]`
+line per request that changes something or is refused — method, path, status,
+caller IP; never a body or a header. Successful GETs are not logged. The portal
+shows it under Servers → ⋯ → **View agent log**. Job output is not in the
+journal; the portal keeps that per operation.
+
+## Re-pulling DB credentials
+
+`POST /api/op/dbcreds` `{ domain }` reads the `seo-domain-map` entry of the
+site's recorded root domain (`SITE_ROOT_DOMAIN`) again and rewrites `DB_HOST`,
+`DB_NAME`, `DB_USER`, `DB_PASSWORD` in the site's `.env` where they differ, then
+clears the site's caches. Use it after the map changed (database moved, password
+rotated). Nothing else in the `.env` is touched; the password is never logged.

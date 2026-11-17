@@ -16,6 +16,7 @@ import { runSecrets, runRotateKey, SECRET_KEYS } from './secrets.js';
 import { runDbBackup, runDbRestore } from './dbbackup.js';
 import { runScan } from './scan.js';
 import { runPhpUpgrade } from './phpupgrade.js';
+import { runDbCreds } from './dbcreds.js';
 import { readS3Params } from '../lib/s3.js';
 import { KINDS as BACKUP_KINDS } from './dbbackup.js';
 import { checkCertPair } from '../lib/cert.js';
@@ -328,6 +329,22 @@ const root = {
 };
 
 // ============================================================
+//  dbcreds — re-pull a live site's DB credentials from the map: { domain }
+// ============================================================
+const dbcreds = {
+  name: 'dbcreds',
+  validate(p = {}) {
+    p = sanitize(p);
+    const errors = [];
+    reqDomain(errors, 'domain', p.domain);
+    return { ok: errors.length === 0, errors, clean: { domain: p.domain } };
+  },
+  async run(job, helpers, p) {
+    await runDbCreds(job, helpers, p);
+  },
+};
+
+// ============================================================
 //  www — a live site's WWW preference: nonwww | www | off
 // ============================================================
 const www = {
@@ -574,7 +591,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, dbcreds, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;
