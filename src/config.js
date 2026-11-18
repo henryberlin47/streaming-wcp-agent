@@ -48,6 +48,7 @@ const config = {
     // every database in the map, one after another
     dbbackup: parseInt(process.env.AGENT_BACKUP_TIMEOUT_MS || String(6 * 60 * 60 * 1000), 10),
     dbrestore: parseInt(process.env.AGENT_RESTORE_TIMEOUT_MS || String(3 * 60 * 60 * 1000), 10),
+    harden: parseInt(process.env.AGENT_HARDEN_TIMEOUT_MS || String(60 * 60 * 1000), 10), // a full package update must never be cut off halfway
     scan: parseInt(process.env.AGENT_SCAN_TIMEOUT_MS || String(2 * 60 * 60 * 1000), 10), // clamscan over a large uploads dir
   },
 

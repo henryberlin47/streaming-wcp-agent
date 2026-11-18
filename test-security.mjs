@@ -21,10 +21,10 @@ stub("sshd", `if [ "$1" = "-t" ]; then [ -f "${base}/sshd-t-fails" ] && { echo "
 [ -f "${base}/ignore-dropins" ] || cat "${dropins}"/*.conf 2>/dev/null | grep -v '^#' | tr 'A-Z' 'a-z'
 printf 'port 22\\npasswordauthentication yes\\nkbdinteractiveauthentication yes\\npermitrootlogin yes\\npubkeyauthentication yes\\nmaxauthtries 6\\nlogingracetime 120\\nx11forwarding yes\\npermitemptypasswords no\\n'`);
 stub("journalctl", `cat "${sshlog}" 2>/dev/null`);
-stub("systemctl", `echo "$*" >> "${base}/systemctl"`);
+stub("systemctl", `echo "$*" >> "${base}/systemctl"; case "$1" in list-units) cat "${base}/running" 2>/dev/null;; start) [ -f "${base}/start-fails" ] || echo "$2 loaded active running x" >> "${base}/running";; esac`);
 stub("mysql", `case "$*" in *mysql.func*) printf 'sys_exec\\tlib_mysqludf_sys.so\\n';; *mysql.user*) printf 'root\\t%%\\napp\\t%%\\n';; esac`);
 stub("dpkg", "exit 0");
-stub("apt-get", `echo "$*" >> "${base}/apt"`);
+stub("apt-get", `echo "$*" >> "${base}/apt"; case "$*" in *upgrade*) [ -f "${base}/upgrade-stops-db" ] && sed -i.bak /mariadb/d "${base}/running";; esac; exit 0`); // an upgrade can leave the database stopped
 stub("unattended-upgrade", `echo "needrestart=$NEEDRESTART_MODE" >> "${base}/apt"; [ -f "${base}/uu-fails" ] && exit 1; echo "Packages that will be upgraded: libssl3"; rm -f "${base}/waiting"`);
 stub("apt-check", `[ -f "${base}/waiting" ] && echo "7;$(cat "${base}/waiting")" >&2 || echo "6;0" >&2`);
 stub("apt", `printf 'Listing...\\nlibgd3/noble 2.3.3-13+deb.sury.org+1 amd64 [upgradable from: 2.3.3-9ubuntu5]\\nvim/noble-updates 9.1 amd64 [upgradable from: 9.0]\\nlibssl3/noble-updates 3.0.14 amd64 [upgradable from: 3.0.13]\\n'`);
@@ -242,6 +242,17 @@ assert.match(said(), /1 security update\(s\) are still waiting: libgd3\n/, "the 
 assert.match(fs.readFileSync(path.join(base, "apt"), "utf8"), /policy libgd3 vim libssl3\n/); assert.match(said(), /held back on purpose \(apt-mark hold\): libssl3/); assert.match(said(), /apt-get install --only-upgrade libgd3\n/);
 fs.writeFileSync(path.join(bin, "unattended-upgrade"), "#!/bin/bash\nexit 1\n");
 await assert.rejects(harden("install-updates"), /unattended-upgrade failed/);
+// all-updates: every repository, nothing removed, and no service the sites need is left down
+const RUNNING = "nginx.service loaded active running nginx\nmariadb.service loaded active running db\ncron.service loaded active running cron\n";
+fs.writeFileSync(path.join(base, "running"), RUNNING); fs.writeFileSync(path.join(base, "apt"), ""); from = lines.length;
+await harden("all-updates");
+assert.match(fs.readFileSync(path.join(base, "apt"), "utf8"), /update\n.* upgrade --with-new-pkgs\n/); assert.match(said(), /still running: nginx\.service, mariadb\.service/); assert.match(said(), /a reboot is needed/);
+fs.writeFileSync(path.join(base, "upgrade-stops-db"), ""); fs.writeFileSync(path.join(base, "systemctl"), ""); from = lines.length;
+await harden("all-updates");
+assert.match(fs.readFileSync(path.join(base, "systemctl"), "utf8"), /start mariadb\.service/, "a service the update left stopped is started again"); assert.match(said(), /mariadb\.service was running before and is not now/);
+fs.writeFileSync(path.join(base, "running"), RUNNING); fs.writeFileSync(path.join(base, "start-fails"), "");
+await assert.rejects(harden("all-updates"), /mariadb\.service did not come back after the update/, "and if it will not start, the job fails and says which");
+for (const f of ["upgrade-stops-db", "start-fails", "running"]) fs.rmSync(path.join(base, f));
 const ufwCalls = fs.readFileSync(path.join(base, "ufw"), "utf8").split("\n");
 assert.ok(ufwCalls.indexOf("allow 22/tcp") >= 0 && ufwCalls.indexOf("allow 22/tcp") < ufwCalls.indexOf("--force enable"), "SSH is allowed BEFORE the firewall is turned on");
 assert.ok(ufwCalls.includes("allow in on tailscale0 to any port 8787 proto tcp"));

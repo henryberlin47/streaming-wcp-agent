@@ -17,6 +17,7 @@ import { parseSshdT, parseUfw, parseListening, parseAccounts, listKeys, keyLogin
 //   fail2ban       ban addresses after repeated failed SSH logins — the SSH jail ONLY
 //   auto-updates   unattended-upgrades for Ubuntu security fixes
 //   install-updates  install the waiting Ubuntu security updates now
+//   all-updates    install EVERY waiting package update (nginx, database, PHP, … restart)
 //   firewall       ufw on, with SSH, web and the agent (tailnet only) allowed
 //   ssh-basics     MaxAuthTries 3, LoginGraceTime 30, no X11, no empty passwords
 //   env-perms      site .env files + the agent .env not readable by other users
@@ -29,7 +30,7 @@ import { parseSshdT, parseUfw, parseListening, parseAccounts, listKeys, keyLogin
 // (`sshd -T`) and removed again if it did not take — and ssh is reloaded, not
 // restarted, so sessions that are open stay open.
 // ============================================================
-export const ACTIONS = ['trusted-proxies', 'fail2ban', 'auto-updates', 'install-updates', 'firewall', 'ssh-basics', 'env-perms', 'ssh-keys-only'];
+export const ACTIONS = ['trusted-proxies', 'fail2ban', 'auto-updates', 'install-updates', 'all-updates', 'firewall', 'ssh-basics', 'env-perms', 'ssh-keys-only'];
 const SSHD_DIR = process.env.AGENT_SSHD_DROPIN_DIR || '/etc/ssh/sshd_config.d';
 const F2B_DIR = process.env.AGENT_F2B_JAIL_DIR || '/etc/fail2ban/jail.d';
 const APT_DIR = process.env.AGENT_APT_CONF_DIR || '/etc/apt/apt.conf.d';
@@ -200,13 +201,43 @@ const steps = {
       if (waiting.length) info(`to install by hand on the server: apt-get install --only-upgrade ${waiting.join(' ')}`);
     }
     else ok('no security updates are waiting');
-    const stale = await run(helpers, 'needrestart', ['-b', '-r', 'l'], { quiet: true }).then((c) => [...c.stdout.matchAll(/^NEEDRESTART-SVC: (\S+)/gm)].map((m) => m[1]), () => []);
-    if (stale.length) warn(`still running the old code until restarted: ${stale.join(', ')}`);
-    if (await pathExists(REBOOT_FLAG)) warn('a reboot is needed to finish (kernel or core library) — restart the server when traffic is low');
+    await afterUpgrade(helpers, { warn });
+  },
+
+  // Every waiting update, from every repository — the ones the security-only run never touches
+  // (nginx, MariaDB, Redis, Node.js, Tailscale come from third-party repositories). New packages
+  // may be installed (a new kernel), nothing is ever removed, and changed config files are kept.
+  async 'all-updates'(helpers, { ok, info, warn }) {
+    const before = await running(helpers);
+    const upd = await run(helpers, 'apt-get', [...APT, 'update'], { env: ENV });
+    if (upd.code !== 0) throw new Error('apt-get update failed (a repository is unreachable or broken) — nothing was installed');
+    const r = await run(helpers, 'apt-get', [...APT, 'upgrade', '--with-new-pkgs'], { env: { ...ENV, NEEDRESTART_MODE: 'l' } });
+    // Whatever apt said: nothing the sites need may be left down. Start what stopped, then look again.
+    const stopped = async () => { const now = await running(helpers); return before.filter((u) => !now.includes(u)); };
+    for (const u of await stopped()) { warn(`${u} was running before and is not now — starting it`); await run(helpers, 'systemctl', ['start', u], { quiet: true }); }
+    const down = await stopped();
+    if (down.length) throw new Error(`${down.join(', ')} did not come back after the update — on the server: systemctl status ${down[0]}`);
+    if (r.code !== 0) throw new Error('apt-get upgrade failed — see the output above. The services that were running are still running.');
+    const left = /^(\d+);/.exec(await run(helpers, UPDATE_CHECK, [], { quiet: true }).then((c) => `${c.stderr}${c.stdout}`.trim(), () => ''))?.[1];
+    if (Number(left) > 0) info(`${left} update(s) are still waiting: apt keeps those back (a phased roll-out, or they would remove another package)`);
+    ok(`updates installed; still running: ${before.join(', ') || 'none of the watched services were running'}`);
+    await afterUpgrade(helpers, { warn });
   },
 
   async 'firewall'(helpers, L) { await enableFirewall(helpers, L); },
 };
+
+// Services the sites and the panel need: checked before and after a full update.
+const WATCHED = /^(nginx|mysql|mariadb|php[\d.]*-fpm|redis-server|tailscaled)\.service$/;
+const running = async (helpers) => (await run(helpers, 'systemctl', ['list-units', '--type=service', '--state=running', '--no-legend', '--plain'], { quiet: true })).stdout
+  .split('\n').map((l) => l.trim().split(/\s+/)[0]).filter((u) => WATCHED.test(u));
+
+/** After packages changed: which services still run the old code, and whether a reboot is needed. */
+async function afterUpgrade(helpers, { warn }) {
+  const stale = await run(helpers, 'needrestart', ['-b', '-r', 'l'], { quiet: true }).then((c) => [...c.stdout.matchAll(/^NEEDRESTART-SVC: (\S+)/gm)].map((m) => m[1]), () => []);
+  if (stale.length) warn(`still running the old code until restarted: ${stale.join(', ')}`);
+  if (await pathExists(REBOOT_FLAG)) warn('a reboot is needed to finish (kernel or core library) — restart the server when traffic is low');
+}
 
 /** ufw on, with SSH, web, Tailscale and the agent (tailnet only) allowed first. Shared with the firewall operation. */
 export async function enableFirewall(helpers, { ok, info, warn }) {
