@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import config from '../config.js';
-import { run, nginxTest, nginxReload } from '../lib/sys.js';
+import { run, nginxTest, nginxReload, pathExists } from '../lib/sys.js';
 import { allowlist, saveAllowlist } from '../lib/proxies.js';
 import { cacheConf } from '../lib/site.js';
 import { logger } from '../lib/log.js';
@@ -16,6 +16,7 @@ import { parseSshdT, parseUfw, parseListening, parseAccounts, listKeys, keyLogin
 //                    the web ports, and any ban on them is lifted
 //   fail2ban       ban addresses after repeated failed SSH logins — the SSH jail ONLY
 //   auto-updates   unattended-upgrades for Ubuntu security fixes
+//   install-updates  install the waiting Ubuntu security updates now
 //   firewall       ufw on, with SSH, web and the agent (tailnet only) allowed
 //   ssh-basics     MaxAuthTries 3, LoginGraceTime 30, no X11, no empty passwords
 //   env-perms      site .env files + the agent .env not readable by other users
@@ -28,7 +29,7 @@ import { parseSshdT, parseUfw, parseListening, parseAccounts, listKeys, keyLogin
 // (`sshd -T`) and removed again if it did not take — and ssh is reloaded, not
 // restarted, so sessions that are open stay open.
 // ============================================================
-export const ACTIONS = ['trusted-proxies', 'fail2ban', 'auto-updates', 'firewall', 'ssh-basics', 'env-perms', 'ssh-keys-only'];
+export const ACTIONS = ['trusted-proxies', 'fail2ban', 'auto-updates', 'install-updates', 'firewall', 'ssh-basics', 'env-perms', 'ssh-keys-only'];
 const SSHD_DIR = process.env.AGENT_SSHD_DROPIN_DIR || '/etc/ssh/sshd_config.d';
 const F2B_DIR = process.env.AGENT_F2B_JAIL_DIR || '/etc/fail2ban/jail.d';
 const APT_DIR = process.env.AGENT_APT_CONF_DIR || '/etc/apt/apt.conf.d';
@@ -36,6 +37,8 @@ const PASSWD = process.env.AGENT_PASSWD_FILE || '/etc/passwd';
 const ENV_FILE = process.env.AGENT_ENV_FILE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '.env');
 const APT = ['-o', 'Dpkg::Options::=--force-confold', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Acquire::ForceIPv4=true', '-o', 'DPkg::Lock::Timeout=300', '-y', '-qq'];
 const ENV = { DEBIAN_FRONTEND: 'noninteractive' };
+const UPDATE_CHECK = process.env.AGENT_UPDATE_CHECK || '/usr/lib/update-notifier/apt-check'; // prints "<all>;<security>"
+const REBOOT_FLAG = process.env.AGENT_REBOOT_FLAG || '/var/run/reboot-required';
 
 const sshd = async (helpers) => parseSshdT((await run(helpers, 'sshd', ['-T'], { quiet: true })).stdout);
 
@@ -172,6 +175,22 @@ const steps = {
     await fs.writeFile(path.join(APT_DIR, '20auto-upgrades'), 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n');
     await run(helpers, 'systemctl', ['enable', '--now', 'unattended-upgrades'], { quiet: true });
     ok('Ubuntu security updates now install automatically (daily)');
+  },
+
+  // The run unattended-upgrades does every night, done now: Ubuntu SECURITY updates only.
+  async 'install-updates'(helpers, { ok, info, warn }) {
+    if (await aptInstall(helpers, 'unattended-upgrades')) info('unattended-upgrades installed');
+    await run(helpers, 'apt-get', [...APT, 'update'], { env: ENV, quiet: true });
+    // ponytail: needrestart only LISTS here. Left to restart services on its own it can restart
+    // this agent, and systemd then kills the upgrade halfway through. The services are named below instead.
+    const r = await run(helpers, 'unattended-upgrade', ['-v'], { env: { ...ENV, NEEDRESTART_MODE: 'l' } });
+    if (r.code !== 0) throw new Error('unattended-upgrade failed — see the output above');
+    const left = /^\d+;(\d+)/.exec(await run(helpers, UPDATE_CHECK, [], { quiet: true }).then((c) => `${c.stderr}${c.stdout}`.trim(), () => ''))?.[1];
+    if (Number(left) > 0) warn(`${left} security update(s) are still waiting: Ubuntu does not install these unattended (a held package, or one that needs Ubuntu Pro) — see the output above`);
+    else ok('no security updates are waiting');
+    const stale = await run(helpers, 'needrestart', ['-b', '-r', 'l'], { quiet: true }).then((c) => [...c.stdout.matchAll(/^NEEDRESTART-SVC: (\S+)/gm)].map((m) => m[1]), () => []);
+    if (stale.length) warn(`still running the old code until restarted: ${stale.join(', ')}`);
+    if (await pathExists(REBOOT_FLAG)) warn('a reboot is needed to finish (kernel or core library) — restart the server when traffic is low');
   },
 
   async 'firewall'(helpers, L) { await enableFirewall(helpers, L); },

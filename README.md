@@ -333,13 +333,16 @@ line only — no options); `POST /api/security/keys/remove { user, fingerprint }
 removes one. Removing root's last key is refused while password login is off.
 
 `POST /api/op/harden { actions: [...] }` applies fixes, each idempotent:
-`fail2ban`, `auto-updates`, `firewall`, `ssh-basics`, `env-perms`,
+`fail2ban`, `auto-updates`, `install-updates`, `firewall`, `ssh-basics`, `env-perms`,
 `ssh-keys-only`. **`ssh-keys-only` turns SSH password login off and refuses
 unless root has a key installed and the SSH log shows a successful key login
 for root** — proof the key works. Every sshd change is a drop-in that is
 syntax-checked, read back and removed again if it did not take effect; ssh is
 reloaded, not restarted, so open sessions stay open. `firewall` allows SSH
 before it switches ufw on and names the public ports it will cut.
+`install-updates` runs `unattended-upgrade` now (Ubuntu security updates only),
+then says what is still waiting, which services still run the old code, and
+whether a reboot is needed.
 
 The agent itself now locks an address out for 15 minutes after 10 wrong keys,
 logs why each caller was refused, logs every job's start and end, and keeps its

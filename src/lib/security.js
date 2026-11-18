@@ -245,7 +245,7 @@ export function findingsFrom(f) {
   }
 
   const up = f.updates || {};
-  if (up.security > 0) add('medium', 'updates', `${up.security} security update(s) are waiting`, `${up.pending} package update(s) in total.`, up.autoUpdates ? undefined : 'auto-updates');
+  if (up.security > 0) add('medium', 'updates', `${up.security} security update(s) are waiting`, `${up.pending} package update(s) in total.`, 'install-updates');
   if (up.autoUpdates === false) add('medium', 'auto-updates', 'Security updates are not installed automatically', 'unattended-upgrades applies Ubuntu security fixes on its own.', 'auto-updates');
   if (up.rebootRequired) add('low', 'reboot', 'A restart is pending', 'An installed update (usually the kernel) only takes effect after a reboot.');
 

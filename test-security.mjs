@@ -24,6 +24,10 @@ stub("journalctl", `cat "${sshlog}" 2>/dev/null`);
 stub("systemctl", `echo "$*" >> "${base}/systemctl"`);
 stub("mysql", `case "$*" in *mysql.func*) printf 'sys_exec\\tlib_mysqludf_sys.so\\n';; *mysql.user*) printf 'root\\t%%\\napp\\t%%\\n';; esac`);
 stub("dpkg", "exit 0");
+stub("apt-get", `echo "$*" >> "${base}/apt"`);
+stub("unattended-upgrade", `echo "needrestart=$NEEDRESTART_MODE" >> "${base}/apt"; [ -f "${base}/uu-fails" ] && exit 1; echo "Packages that will be upgraded: libssl3"; rm -f "${base}/waiting"`);
+stub("apt-check", `[ -f "${base}/waiting" ] && echo "7;$(cat "${base}/waiting")" >&2 || echo "6;0" >&2`);
+stub("needrestart", `printf 'NEEDRESTART-VER: 3.6\\nNEEDRESTART-SVC: nginx.service\\nNEEDRESTART-SVC: php8.3-fpm.service\\n'`);
 stub("nginx", `[ -f "${base}/nginx-t-fails" ] && { echo "nginx: [emerg] bad" >&2; exit 1; }; exit 0`); // everything "already installed": no apt in a test
 // fail2ban-client: -d lists the jails the configuration would start (minus those wcp.local switches off), status lists them as running
 fs.writeFileSync(path.join(bin, "fail2ban-client"), `#!/usr/bin/env node
@@ -40,7 +44,7 @@ stub("ufw", `echo "$*" >> "${base}/ufw"; [ "$1" = status ] && echo "Status: inac
 stub("ss", `echo 'LISTEN 0 511 0.0.0.0:22222 0.0.0.0:* users:(("nginx",pid=1,fd=6))'`);
 Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENT_PASSWD_FILE: passwd, AGENT_SHADOW_FILE: shadow, AGENT_GROUP_FILE: group, AGENT_KEY_SEARCH_DIRS: base, AGENT_SSHD_DROPIN_DIR: dropins,
   AGENT_F2B_JAIL_DIR: path.join(base, "jail.d"), AGENT_APT_CONF_DIR: path.join(base, "apt.conf.d"), AGENT_WWW_DIR: path.join(base, "www"), AGENT_ENV_FILE: path.join(base, "agent.env"),
-  AGENT_ALLOWLIST_FILE: path.join(base, "allowlist.txt"), AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_TOKEN: "t".repeat(64) });
+  AGENT_ALLOWLIST_FILE: path.join(base, "allowlist.txt"), AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_UPDATE_CHECK: path.join(bin, "apt-check"), AGENT_REBOOT_FLAG: path.join(base, "reboot-required"), AGENT_TOKEN: "t".repeat(64) });
 
 const S = await import(path.join(A, "src/lib/security.js"));
 const { operations } = await import(path.join(A, "src/operations/index.js"));
@@ -194,6 +198,16 @@ await assert.rejects(harden("fail2ban"), /instead of the SSH jail alone, so it w
 assert.match(fs.readFileSync(path.join(base, "systemctl"), "utf8"), /stop fail2ban\ndisable fail2ban/);
 fs.rmSync(path.join(base, "f2b-ignores-overrides"));
 assert.match(fs.readFileSync(path.join(base, "apt.conf.d/20auto-upgrades"), "utf8"), /Unattended-Upgrade "1"/);
+// install-updates: package lists refreshed, Ubuntu's security-only run, nothing restarted behind the job's back, and an honest ending
+fs.writeFileSync(path.join(base, "waiting"), "1"); fs.writeFileSync(path.join(base, "reboot-required"), ""); let from = lines.length; const said = () => lines.slice(from).join("\n");
+await harden("install-updates");
+assert.match(fs.readFileSync(path.join(base, "apt"), "utf8"), /update\nneedrestart=l\n$/, "apt-get update first, then the upgrade with needrestart told to list only");
+assert.match(said(), /no security updates are waiting/); assert.match(said(), /old code until restarted: nginx\.service, php8\.3-fpm\.service/); assert.match(said(), /a reboot is needed/);
+fs.writeFileSync(path.join(bin, "unattended-upgrade"), "#!/bin/bash\necho 'No packages found that can be upgraded unattended'\n"); fs.writeFileSync(path.join(base, "waiting"), "1"); from = lines.length;
+await harden("install-updates");
+assert.match(said(), /1 security update\(s\) are still waiting/, "an update Ubuntu will not install unattended is said, not hidden");
+fs.writeFileSync(path.join(bin, "unattended-upgrade"), "#!/bin/bash\nexit 1\n");
+await assert.rejects(harden("install-updates"), /unattended-upgrade failed/);
 const ufwCalls = fs.readFileSync(path.join(base, "ufw"), "utf8").split("\n");
 assert.ok(ufwCalls.indexOf("allow 22/tcp") >= 0 && ufwCalls.indexOf("allow 22/tcp") < ufwCalls.indexOf("--force enable"), "SSH is allowed BEFORE the firewall is turned on");
 assert.ok(ufwCalls.includes("allow in on tailscale0 to any port 8787 proto tcp"));
