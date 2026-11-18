@@ -27,6 +27,39 @@ stub("dpkg", "exit 0");
 stub("apt-get", `echo "$*" >> "${base}/apt"`);
 stub("unattended-upgrade", `echo "needrestart=$NEEDRESTART_MODE" >> "${base}/apt"; [ -f "${base}/uu-fails" ] && exit 1; echo "Packages that will be upgraded: libssl3"; rm -f "${base}/waiting"`);
 stub("apt-check", `[ -f "${base}/waiting" ] && echo "7;$(cat "${base}/waiting")" >&2 || echo "6;0" >&2`);
+stub("apt", `printf 'Listing...\\nlibgd3/noble 2.3.3-13+deb.sury.org+1 amd64 [upgradable from: 2.3.3-9ubuntu5]\\nvim/noble-updates 9.1 amd64 [upgradable from: 9.0]\\nlibssl3/noble-updates 3.0.14 amd64 [upgradable from: 3.0.13]\\n'`);
+// libgd3: a security fix newer than the installed version exists, but apt would install a third-party one. libssl3: its -security version IS the installed one.
+stub("apt-cache", `echo "$*" >> "${base}/apt"; cat <<'P'
+libgd3:
+  Installed: 2.3.3-9ubuntu5
+  Candidate: 2.3.3-13+deb.sury.org+1
+  Version table:
+     2.3.3-13+deb.sury.org+1 500
+        500 https://ppa.launchpadcontent.net/ondrej/php/ubuntu noble/main amd64 Packages
+     2.3.3-9ubuntu5.1 500
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+ *** 2.3.3-9ubuntu5 500
+        500 http://archive.ubuntu.com/ubuntu noble/main amd64 Packages
+        100 /var/lib/dpkg/status
+vim:
+  Installed: 9.0
+  Candidate: 9.1
+  Version table:
+     9.1 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+ *** 9.0 100
+        100 /var/lib/dpkg/status
+libssl3:
+  Installed: 3.0.13
+  Candidate: 3.0.14
+  Version table:
+     3.0.14 500
+        500 http://archive.ubuntu.com/ubuntu noble-updates/main amd64 Packages
+ *** 3.0.13 500
+        500 http://security.ubuntu.com/ubuntu noble-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+P`);
+stub("apt-mark", "echo libssl3");
 stub("needrestart", `printf 'NEEDRESTART-VER: 3.6\\nNEEDRESTART-SVC: nginx.service\\nNEEDRESTART-SVC: php8.3-fpm.service\\n'`);
 stub("nginx", `[ -f "${base}/nginx-t-fails" ] && { echo "nginx: [emerg] bad" >&2; exit 1; }; exit 0`); // everything "already installed": no apt in a test
 // fail2ban-client: -d lists the jails the configuration would start (minus those wcp.local switches off), status lists them as running
@@ -205,7 +238,8 @@ assert.match(fs.readFileSync(path.join(base, "apt"), "utf8"), /update\nneedresta
 assert.match(said(), /no security updates are waiting/); assert.match(said(), /old code until restarted: nginx\.service, php8\.3-fpm\.service/); assert.match(said(), /a reboot is needed/);
 fs.writeFileSync(path.join(bin, "unattended-upgrade"), "#!/bin/bash\necho 'No packages found that can be upgraded unattended'\n"); fs.writeFileSync(path.join(base, "waiting"), "1"); from = lines.length;
 await harden("install-updates");
-assert.match(said(), /1 security update\(s\) are still waiting/, "an update Ubuntu will not install unattended is said, not hidden");
+assert.match(said(), /1 security update\(s\) are still waiting: libgd3\n/, "the update Ubuntu counts as security but will not install unattended is named — and only that one");
+assert.match(fs.readFileSync(path.join(base, "apt"), "utf8"), /policy libgd3 vim libssl3\n/); assert.match(said(), /held back on purpose \(apt-mark hold\): libssl3/); assert.match(said(), /apt-get install --only-upgrade libgd3\n/);
 fs.writeFileSync(path.join(bin, "unattended-upgrade"), "#!/bin/bash\nexit 1\n");
 await assert.rejects(harden("install-updates"), /unattended-upgrade failed/);
 const ufwCalls = fs.readFileSync(path.join(base, "ufw"), "utf8").split("\n");

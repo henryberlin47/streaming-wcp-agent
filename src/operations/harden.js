@@ -186,7 +186,19 @@ const steps = {
     const r = await run(helpers, 'unattended-upgrade', ['-v'], { env: { ...ENV, NEEDRESTART_MODE: 'l' } });
     if (r.code !== 0) throw new Error('unattended-upgrade failed — see the output above');
     const left = /^\d+;(\d+)/.exec(await run(helpers, UPDATE_CHECK, [], { quiet: true }).then((c) => `${c.stderr}${c.stdout}`.trim(), () => ''))?.[1];
-    if (Number(left) > 0) warn(`${left} security update(s) are still waiting: Ubuntu does not install these unattended (a held package, or one that needs Ubuntu Pro) — see the output above`);
+    if (Number(left) > 0) {
+      // Ubuntu counts an update as "security" when ANY version newer than the installed one is in a
+      // -security source, even if the version apt would install comes from somewhere else. Same rule here:
+      // in `apt-cache policy`, the versions listed above the installed one (***) are the newer ones.
+      const out = (cmd, args) => run(helpers, cmd, args, { quiet: true, env: ENV }).then((c) => c.stdout, () => '');
+      const names = (await out('apt', ['list', '--upgradable'])).split('\n').map((l) => /^([^/\s]+)\//.exec(l)?.[1]).filter(Boolean);
+      const waiting = names.length ? (await out('apt-cache', ['policy', ...names])).split(/^(?=\S+:$)/m).filter((blk) => /-security/.test(blk.split('***')[0])).map((blk) => blk.slice(0, blk.indexOf(':\n'))) : [];
+      const held = (await out('apt-mark', ['showhold'])).split('\n').filter(Boolean);
+      warn(`${left} security update(s) are still waiting${waiting.length ? `: ${waiting.join(', ')}` : ''}`);
+      if (held.length) warn(`held back on purpose (apt-mark hold): ${held.join(', ')}`);
+      info('The security-only run leaves these alone: the package is held, its config file was changed and it must ask, or the version apt would install comes from the regular updates or a third-party repository.');
+      if (waiting.length) info(`to install by hand on the server: apt-get install --only-upgrade ${waiting.join(' ')}`);
+    }
     else ok('no security updates are waiting');
     const stale = await run(helpers, 'needrestart', ['-b', '-r', 'l'], { quiet: true }).then((c) => [...c.stdout.matchAll(/^NEEDRESTART-SVC: (\S+)/gm)].map((m) => m[1]), () => []);
     if (stale.length) warn(`still running the old code until restarted: ${stale.join(', ')}`);
