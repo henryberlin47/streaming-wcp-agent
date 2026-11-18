@@ -27,15 +27,41 @@ export function requireEmptyQueue(job) {
   }
 }
 
-// Restart this agent a few seconds from now, from OUTSIDE this process.
-export async function scheduleRestart(helpers) {
-  let r = await run(helpers, 'systemd-run', ['--quiet', `--on-active=${RESTART_DELAY_S}`, 'systemctl', 'restart', SERVICE], { quiet: true });
+// Run `systemctl <what…>` a few seconds from now, from OUTSIDE this process.
+async function later(helpers, what) {
+  let r = await run(helpers, 'systemd-run', ['--quiet', `--on-active=${RESTART_DELAY_S}`, 'systemctl', ...what], { quiet: true });
   if (r.code !== 0) {
-    // No systemd-run (unusual): detach a sleeper so the restart still outlives this process.
-    r = await run(helpers, 'bash', ['-c', `setsid nohup sh -c 'sleep ${RESTART_DELAY_S}; systemctl restart ${SERVICE}' >/dev/null 2>&1 &`], { quiet: true });
-    if (r.code !== 0) throw new Error(`could not schedule the restart — run: systemctl restart ${SERVICE}`);
+    // No systemd-run (unusual): detach a sleeper so it still outlives this process.
+    r = await run(helpers, 'bash', ['-c', `setsid nohup sh -c 'sleep ${RESTART_DELAY_S}; systemctl ${what.join(' ')}' >/dev/null 2>&1 &`], { quiet: true });
+    if (r.code !== 0) throw new Error(`could not schedule it — run: systemctl ${what.join(' ')}`);
   }
+}
+
+// Restart this agent a few seconds from now.
+export async function scheduleRestart(helpers) {
+  await later(helpers, ['restart', SERVICE]);
   return `${SERVICE} restarts in ~${RESTART_DELAY_S}s`;
+}
+
+// ============================================================
+//  reboot — restart the whole server
+// ============================================================
+// Refused while another job is live, and refused if something the sites or the
+// panel need is running now but NOT set to start at boot: it would stay down
+// after the reboot (and without the agent or Tailscale the panel could not
+// even say so). ssh is left out: on Ubuntu 24.04 it is started by its socket.
+const MUST_RETURN = /^(nginx|mysql|mariadb|php[\d.]*-fpm|tailscaled)\.service$/;
+export async function runReboot(job, helpers) {
+  const { ok } = logger(helpers);
+  requireEmptyQueue(job);
+  const running = (await run(helpers, 'systemctl', ['list-units', '--type=service', '--state=running', '--no-legend', '--plain'], { quiet: true })).stdout
+    .split('\n').map((l) => l.trim().split(/\s+/)[0]).filter((u) => MUST_RETURN.test(u));
+  const units = [...running, `${SERVICE}.service`]; // the agent last: a unit systemd does not know prints no line
+  const state = (await run(helpers, 'systemctl', ['is-enabled', ...units], { quiet: true })).stdout.trim().split('\n');
+  const stayDown = units.filter((u, i) => !/^(enabled|enabled-runtime|static|alias|indirect|generated)$/.test(state[i] || ''));
+  if (stayDown.length) throw new Error(`not rebooting: ${stayDown.join(', ')} would not start again at boot. Run: systemctl enable ${stayDown.join(' ')}`);
+  await later(helpers, ['reboot']);
+  ok(`the server reboots in ~${RESTART_DELAY_S}s; its sites are offline until it is back, usually about a minute`);
 }
 
 export async function runSelfUpdate(job, helpers) {

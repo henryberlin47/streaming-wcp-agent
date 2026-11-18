@@ -7,7 +7,7 @@ import { runCdn } from './cdn.js';
 import { runSsl } from './ssl.js';
 import { runPurge } from './purge.js';
 import { runMigrate } from './migrate.js';
-import { runSelfUpdate } from './selfupdate.js';
+import { runSelfUpdate, runReboot } from './selfupdate.js';
 import { runSshCheck } from './sshcheck.js';
 import { APP_REPO_DEFAULT } from '../lib/siteConfig.js';
 import { tunePhpNow, WWW_MODES, setSiteCron } from '../lib/site.js';
@@ -565,6 +565,19 @@ const rotatekey = {
 };
 
 // ============================================================
+//  reboot — restart the whole server (no params)
+// ============================================================
+const reboot = {
+  name: 'reboot',
+  validate() {
+    return { ok: true, errors: [], clean: {} };
+  },
+  async run(job, helpers) {
+    await runReboot(job, helpers);
+  },
+};
+
+// ============================================================
 //  selfupdate — git pull this agent + restart it (no params)
 // ============================================================
 const selfupdate = {
@@ -632,7 +645,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, reboot, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;

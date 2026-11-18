@@ -275,6 +275,10 @@ restarts itself. Values are never stored in the operation record.
 
 ## Rotating the agent key
 
+`POST /api/op/reboot` restarts the whole server a few seconds after the job
+reports. It is refused while another job is live, and when nginx, MySQL,
+PHP-FPM, Tailscale or the agent itself is running but not enabled at boot.
+
 `POST /api/op/rotatekey` `{ token }` replaces this agent's own bearer token
 (`AGENT_TOKEN`). The portal generates the new key (Servers → ⋯ → **Rotate agent
 key**, or **Rotate keys (all)**). The agent writes it to its `.env`, accepts it

@@ -15,6 +15,9 @@ const stub = (name, body) => { const p = path.join(bin, name); fs.writeFileSync(
 stub("git", 'if [[ "$*" == *rev-parse* ]]; then [ -f "'+base+'/pulled" ] && echo bbbbbbb || echo aaaaaaa; fi; if [[ "$*" == *pull* ]]; then touch "'+base+'/pulled"; fi; exit 0');
 stub("npm", "exit 0");
 stub("systemd-run", "exit 0");
+// systemctl: nginx, PHP and Tailscale are running; what starts at boot comes from a file the test edits
+const boot = path.join(base, "boot"); fs.writeFileSync(boot, "enabled\nenabled\nenabled\nenabled\n");
+stub("systemctl", `case "$1" in list-units) printf 'nginx.service loaded active running nginx\\nphp8.3-fpm.service loaded active running php\\ncron.service loaded active running cron\\ntailscaled.service loaded active running ts\\n';; is-enabled) cat "${boot}";; esac`);
 process.env.PATH = `${bin}:${process.env.PATH}`;
 process.env.AGENT_JOB_TIMEOUT_MS = "5000";
 // selfupdate prefers the npm beside the real node binary (so it works under
@@ -22,7 +25,7 @@ process.env.AGENT_JOB_TIMEOUT_MS = "5000";
 process.env.AGENT_NPM_BIN = path.join(bin, "npm");
 
 const { enqueue, getJob, STATE } = await import(`${A}/src/jobs.js`);
-const { runSelfUpdate } = await import(`${A}/src/operations/selfupdate.js`);
+const { runSelfUpdate, runReboot } = await import(`${A}/src/operations/selfupdate.js`);
 const { getOperation } = await import(`${A}/src/operations/index.js`);
 const lines = [];
 const helpers = { log: (m) => lines.push(String(m)), err: (m) => lines.push(String(m)), onCancel() {} };
@@ -44,10 +47,23 @@ assert.ok(!/^systemctl /m.test(calls), "systemctl was NOT invoked directly (woul
 assert.ok(lines.some((l) => l.includes("aaaaaaa → bbbbbbb")), "logs show the sha change");
 console.log("2. pull → install → deferred restart (never inline):", res);
 
+// 2b) reboot: deferred the same way, and refused when something the sites or the panel need would stay down
+assert.ok(getOperation("reboot"), "reboot registered");
+await runReboot({ id: "rb" }, helpers);
+assert.match(fs.readFileSync(log, "utf8"), /systemctl is-enabled nginx\.service php8\.3-fpm\.service tailscaled\.service streaming-agent\.service\nsystemd-run --quiet --on-active=5 systemctl reboot\n$/, "checked first, then handed to systemd on a delay");
+for (const [file, unit] of [["enabled\ndisabled\nenabled\nenabled\n", "php8.3-fpm.service"], ["enabled\nenabled\nenabled\n", "streaming-agent.service"]]) {
+  fs.writeFileSync(boot, file); fs.writeFileSync(log, "");
+  await assert.rejects(() => runReboot({ id: "rb" }, helpers), new RegExp(`not rebooting: ${unit.replace(/\./g, "\\.")} would not start again at boot`));
+  assert.ok(!/reboot/.test(fs.readFileSync(log, "utf8")), "no reboot was scheduled");
+}
+fs.writeFileSync(boot, "enabled\nenabled\nenabled\nenabled\n");
+console.log("2b. reboot: deferred via systemd; refused if nginx/PHP/MySQL/Tailscale/the agent would not start at boot");
+
 // 3) refuses while another job is queued: the restart would drop it
 const stuck = enqueue("deploy", {}, () => new Promise(() => {})); // holds the slot forever
 await until(stuck.id, STATE.RUNNING);
 await assert.rejects(() => runSelfUpdate({ id: "self2" }, helpers), /other job\(s\) queued or running/);
+await assert.rejects(() => runReboot({ id: "rb2" }, helpers), /other job\(s\) queued or running/);
 console.log("3. refuses to restart while another job is live");
 
 console.log("\nPASS: selfupdate pulls, installs, defers the restart to systemd, and guards the queue");
