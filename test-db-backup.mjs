@@ -156,7 +156,14 @@ assert.equal(keys("wcp/db-sg1/brand_db/manual/").filter((k) => k.endsWith("_pre-
 const lb = (await listBackups(all)).backups;
 assert.ok(lb.find((b) => b.safety && b.kind === "manual"), "safety backups are flagged and kept");
 assert.ok(lb.every((b) => ["scheduled", "manual"].includes(b.kind)));
-console.log("9. restore: wrong confirmation refused; safety backup first, then the import");
+// database names with a hyphen are real ("socolivetv1-co") and must be restorable; nothing unsafe gets through
+assert.equal(rs({ confirm: "socolivetv1-co" }).ok, true, "a hyphenated database name is accepted");
+assert.equal(rs({ confirm: "socolivetv1-co" }).clean.confirm, "socolivetv1-co");
+for (const bad of ["", "-rf", "a b", "a`b", "a;b", "a'b", "x".repeat(65)]) assert.equal(rs({ confirm: bad }).ok, false, `refuses ${JSON.stringify(bad)}`);
+await assert.rejects(() => operations.dbrestore.run({ id: "j5" }, helpers, rs({ confirm: "brand-db" }).clean), /confirmation does not match/, "…and still has to match the real name");
+assert.equal(operations.migrate.validate({ domain: "brand.tv", destServer: "db-sg2", mode: "pipe", destDb: "brand-copy" }).ok, true, "migrate accepts a hyphenated destination too");
+assert.equal(operations.migrate.validate({ domain: "brand.tv", destServer: "db-sg2", mode: "pipe", destDb: "-x" }).ok, false);
+console.log("9. restore: wrong confirmation refused; safety backup first, then the import; hyphenated database names work");
 
 console.log("\nPASS: databases are backed up to Spaces with retention, listed, and restored safely");
 spaces.close(); fs.rmSync(base, { recursive: true, force: true });

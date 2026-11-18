@@ -581,8 +581,11 @@ const selfupdate = {
 //  migrate — move/clone a domain's database to another DB server
 // ============================================================
 const MIGRATE_MODE_RE = /^(dump|import|pipe|all)$/;
-// Interpolated into backticked SQL — keep it to identifier-safe characters.
-const DB_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;
+// A database name: letters, digits, _ and - (real ones here look like
+// "socolivetv1-co"). It is only ever passed as a separate command argument or
+// inside backticks, so a hyphen is safe; what must be kept out is a backtick, a
+// space or quote, and a LEADING hyphen (mysql would read that as an option).
+const DB_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$/;
 const SERVER_LABEL_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const CDN_PREFIX_RE = /^[A-Za-z0-9-]{1,64}$/;
 
@@ -599,7 +602,7 @@ const migrate = {
     const mode = p.mode || 'all';
     if (!MIGRATE_MODE_RE.test(mode)) errors.push('mode must be dump|import|pipe|all');
 
-    if (p.destDb && !DB_NAME_RE.test(p.destDb)) errors.push('destDb must match [A-Za-z0-9_]');
+    if (p.destDb && !DB_NAME_RE.test(p.destDb)) errors.push('destDb may only contain letters, digits, _ and - (and must not start with -)');
     if (mode === 'import' && !p.file) errors.push('import mode requires file (path to a dump)');
     if (p.file && !/^\/[\w./-]+$/.test(p.file)) errors.push('file must be an absolute path');
     if (p.newDomain && !isDomain(p.newDomain)) errors.push('newDomain must be a valid domain');
