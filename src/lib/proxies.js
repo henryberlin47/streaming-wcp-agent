@@ -46,3 +46,12 @@ export async function saveAllowlist(list) {
   await fs.writeFile(FILE, `${next.join('\n')}\n`, { mode: 0o644 });
   return { list: next, removed: before.filter((ip) => !next.includes(ip)) };
 }
+
+// ---- who may reach SSH (the sshaccess operation) ----------------------------
+// Kept in a file so turning the firewall off and on again rebuilds the same rules.
+const SSH_FILE = process.env.AGENT_SSH_SOURCES_FILE || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'ssh-sources.txt');
+/** Addresses/networks that may reach SSH. Empty = anyone. */
+export async function sshSources() {
+  try { return [...new Set((await fs.readFile(SSH_FILE, 'utf8')).split('\n').map((l) => validAddress(l)).filter(Boolean))]; } catch { return []; }
+}
+export const saveSshSources = (list) => fs.writeFile(SSH_FILE, list.length ? `${list.join('\n')}\n` : '', { mode: 0o644 });

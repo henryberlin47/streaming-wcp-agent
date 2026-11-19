@@ -7,3 +7,4 @@ node_modules/
 # ...but the template (empty placeholders) is tracked.
 !.env.example
 allowlist.txt
+ssh-sources.txt

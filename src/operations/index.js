@@ -20,6 +20,7 @@ import { runDbCreds } from './dbcreds.js';
 import { runHarden, ACTIONS as HARDEN_ACTIONS } from './harden.js';
 import { validAddress } from '../lib/proxies.js';
 import { runFirewall, validateFirewall } from './firewall.js';
+import { runSshAccess, validateSshAccess } from './sshaccess.js';
 import { readS3Params } from '../lib/s3.js';
 import { KINDS as BACKUP_KINDS } from './dbbackup.js';
 import { checkCertPair } from '../lib/cert.js';
@@ -565,6 +566,17 @@ const rotatekey = {
 };
 
 // ============================================================
+//  sshaccess — the SSH port and who may reach it: { port?, sources? }
+// ============================================================
+const sshaccess = {
+  name: 'sshaccess',
+  validate: validateSshAccess,
+  async run(job, helpers, p) {
+    await runSshAccess(job, helpers, p);
+  },
+};
+
+// ============================================================
 //  reboot — restart the whole server (no params)
 // ============================================================
 const reboot = {
@@ -645,7 +657,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, reboot, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, reboot, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, sshaccess, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;

@@ -77,7 +77,7 @@ stub("ufw", `echo "$*" >> "${base}/ufw"; [ "$1" = status ] && echo "Status: inac
 stub("ss", `echo 'LISTEN 0 511 0.0.0.0:22222 0.0.0.0:* users:(("nginx",pid=1,fd=6))'`);
 Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENT_PASSWD_FILE: passwd, AGENT_SHADOW_FILE: shadow, AGENT_GROUP_FILE: group, AGENT_KEY_SEARCH_DIRS: base, AGENT_SSHD_DROPIN_DIR: dropins,
   AGENT_F2B_JAIL_DIR: path.join(base, "jail.d"), AGENT_APT_CONF_DIR: path.join(base, "apt.conf.d"), AGENT_WWW_DIR: path.join(base, "www"), AGENT_ENV_FILE: path.join(base, "agent.env"),
-  AGENT_ALLOWLIST_FILE: path.join(base, "allowlist.txt"), AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_UPDATE_CHECK: path.join(bin, "apt-check"), AGENT_REBOOT_FLAG: path.join(base, "reboot-required"), AGENT_TOKEN: "t".repeat(64) });
+  AGENT_ALLOWLIST_FILE: path.join(base, "allowlist.txt"), AGENT_SSH_SOURCES_FILE: path.join(base, "ssh-sources.txt"), AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_UPDATE_CHECK: path.join(bin, "apt-check"), AGENT_REBOOT_FLAG: path.join(base, "reboot-required"), AGENT_TOKEN: "t".repeat(64) });
 
 const S = await import(path.join(A, "src/lib/security.js"));
 const { operations } = await import(path.join(A, "src/operations/index.js"));

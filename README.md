@@ -275,6 +275,14 @@ restarts itself. Values are never stored in the operation record.
 
 ## Rotating the agent key
 
+`POST /api/op/sshaccess { port?, sources? }` changes the SSH port and/or limits
+which addresses may reach it (`sources: []` = anyone). The firewall is opened
+for the new settings first; sshd is moved by a drop-in and must greet a
+connection on the new port, or the drop-in is removed and sshd put back; the
+old openings are removed last. Limiting addresses is done with ufw rules, so it
+needs the firewall on; the tailnet is always allowed, and the list is kept in
+`ssh-sources.txt` so the firewall fix rebuilds the same limit.
+
 `POST /api/op/reboot` restarts the whole server a few seconds after the job
 reports. It is refused while another job is live, and when nginx, MySQL,
 PHP-FPM, Tailscale or the agent itself is running but not enabled at boot.

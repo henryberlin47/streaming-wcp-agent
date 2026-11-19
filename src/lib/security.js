@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import config from '../config.js';
 import { run, pathExists } from './sys.js';
-import { allowlist } from './proxies.js';
+import { allowlist, sshSources } from './proxies.js';
 
 // ============================================================
 //  security.js — read-only security audit of this server
@@ -457,7 +457,7 @@ export async function collectSecurity() {
   const facts = {
     at: new Date().toISOString(),
     os: /^PRETTY_NAME="?([^"\n]+)"?/m.exec(osRelease)?.[1] || null,
-    ssh: Object.fromEntries(['port', 'permitrootlogin', 'passwordauthentication', 'pubkeyauthentication', 'kbdinteractiveauthentication', 'maxauthtries', 'x11forwarding', 'permitemptypasswords', 'logingracetime'].map((k) => [k, ssh[k] ?? null])),
+    ssh: Object.fromEntries(['port', 'permitrootlogin', 'passwordauthentication', 'pubkeyauthentication', 'kbdinteractiveauthentication', 'maxauthtries', 'x11forwarding', 'permitemptypasswords', 'logingracetime'].map((k) => [k, ssh[k] ?? null])), sshSources: await sshSources(),
     users, accounts: accts.length, strayKeyFiles,
     logins: { accepted: log.accepted.slice(0, 200), failed: { total: log.failed.total, byIp: log.failed.byIp.slice(0, 25) } },
     firewall: { installed: ufw.installed, active: ufw.active, rules: ufw.rules.map((r) => r.raw) },

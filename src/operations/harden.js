@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import config from '../config.js';
 import { run, nginxTest, nginxReload, pathExists } from '../lib/sys.js';
-import { allowlist, saveAllowlist } from '../lib/proxies.js';
+import { allowlist, saveAllowlist, sshSources } from '../lib/proxies.js';
+import { SSHD_DIR, F2B_DIR, sshRules } from './sshaccess.js';
 import { cacheConf } from '../lib/site.js';
 import { logger } from '../lib/log.js';
 import { parseSshdT, parseUfw, parseListening, parseAccounts, listKeys, keyLoginSeen } from '../lib/security.js';
@@ -31,8 +32,6 @@ import { parseSshdT, parseUfw, parseListening, parseAccounts, listKeys, keyLogin
 // restarted, so sessions that are open stay open.
 // ============================================================
 export const ACTIONS = ['trusted-proxies', 'fail2ban', 'auto-updates', 'install-updates', 'all-updates', 'firewall', 'ssh-basics', 'env-perms', 'ssh-keys-only'];
-const SSHD_DIR = process.env.AGENT_SSHD_DROPIN_DIR || '/etc/ssh/sshd_config.d';
-const F2B_DIR = process.env.AGENT_F2B_JAIL_DIR || '/etc/fail2ban/jail.d';
 const APT_DIR = process.env.AGENT_APT_CONF_DIR || '/etc/apt/apt.conf.d';
 const PASSWD = process.env.AGENT_PASSWD_FILE || '/etc/passwd';
 const ENV_FILE = process.env.AGENT_ENV_FILE || path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '.env');
@@ -137,10 +136,11 @@ const steps = {
     await fs.mkdir(F2B_DIR, { recursive: true });
     await fs.rm(path.join(F2B_DIR, 'wcp-sshd.conf'), { force: true }); // what an earlier version of this fix wrote
     const local = path.join(F2B_DIR, 'wcp.local'); // a .local in jail.d is read LAST, so it overrides every other file
+    const port = (await sshd(helpers)).port || '22'; // bans apply to the port sshd is really on
     const write = (others) => fs.writeFile(local,
       '# Managed by the WCP agent (harden): SSH jail only. Delete this file to undo.\n'
       // backend=systemd: Ubuntu 24.04 has no /var/log/auth.log by default. The tailnet range is never banned.
-      + '[sshd]\nenabled = true\nbackend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n'
+      + `[sshd]\nenabled = true\nport = ${port}\n` + 'backend = systemd\nmaxretry = 5\nfindtime = 10m\nbantime = 1h\n'
       + others.map((j) => `\n[${j}]\nenabled = false\n`).join(''));
     await writeIgnore();
     // Which jails would start? Read from the configuration WITHOUT starting anything (-d = dump).
@@ -167,7 +167,7 @@ const steps = {
       throw new Error(`fail2ban came up with ${running.join(', ') || 'no jails'} instead of the SSH jail alone, so it was stopped again. Nothing is banning anything.`);
     }
     await run(helpers, 'fail2ban-client', ['unban', '--all'], { quiet: true }); // bans left over from jails that are now off
-    ok('fail2ban is running with the SSH jail only: 5 failed SSH logins in 10 minutes = banned for 1 hour (port 22)');
+    ok(`fail2ban is running with the SSH jail only: 5 failed SSH logins in 10 minutes = banned for 1 hour (port ${port})`);
   },
 
   async 'auto-updates'(helpers, { ok, info }) {
@@ -246,13 +246,14 @@ export async function enableFirewall(helpers, { ok, info, warn }) {
     const sshPort = (await sshd(helpers)).port || '22';
     const was = parseUfw((await run(helpers, 'ufw', ['status'], { quiet: true })).stdout);
     // SSH first, always — so turning the firewall on can never cut the session.
-    const rules = [[`${sshPort}/tcp`], ['80/tcp'], ['443/tcp'], ['41641/udp'], ['in', 'on', 'tailscale0', 'to', 'any', 'port', String(config.port), 'proto', 'tcp'],
+    const from = await sshSources(); // SSH stays limited to these if the operator limited it
+    const rules = [...sshRules(sshPort, from), ['80/tcp'], ['443/tcp'], ['41641/udp'], ['in', 'on', 'tailscale0', 'to', 'any', 'port', String(config.port), 'proto', 'tcp'],
       ...(await allowlist()).map((ip) => allowRule(ip).slice(1))]; // the allowlist by name, so it stays allowed if the public rules are ever narrowed
     for (const rule of rules) {
       const r = await run(helpers, 'ufw', ['allow', ...rule], { quiet: true });
       if (r.code !== 0) throw new Error(`ufw allow ${rule.join(' ')} failed — the firewall was not turned on`);
     }
-    info(`allowed: SSH ${sshPort}, web 80/443, Tailscale 41641/udp, agent ${config.port} on the tailnet only`);
+    info(`allowed: SSH ${sshPort}${from.length ? ` (from ${from.join(', ')} and the tailnet only)` : ''}, web 80/443, Tailscale 41641/udp, agent ${config.port} on the tailnet only`);
     if (!was.active) {
       const allowed = new Set([Number(sshPort), 80, 443]);
       const cut = parseListening((await run(helpers, 'ss', ['-tlnpH'], { quiet: true })).stdout).filter((l) => (l.scope === 'all' || l.scope === 'public') && !allowed.has(l.port));
