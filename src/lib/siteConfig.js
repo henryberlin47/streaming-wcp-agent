@@ -38,5 +38,6 @@ export const MAP_REPO = 'git@github.com:yosuahernandez468-png/seo-domain-map.git
 // External APIs
 export const SEO_MONITOR_BASE = 'https://seo-monitor.antlive.pro';
 export const SEO_MONITOR_TOKEN = process.env.SEO_MONITOR_TOKEN || '';
-export const CDN_API_BASE = 'http://159.65.11.19:3000';
+// The CDN manager. Its API lives under /api — the bare host answers every other path with its admin web page.
+export const CDN_API_BASE = (process.env.CDN_API_BASE || 'https://cdnimgproxy.com/api').replace(/\/+$/, '');
 export const CDN_API_KEY = process.env.CDN_API_KEY || '';

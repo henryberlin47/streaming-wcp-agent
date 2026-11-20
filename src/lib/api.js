@@ -9,7 +9,7 @@ import {
 // failed registration warns but never aborts a deploy (matching the scripts).
 // ============================================================
 
-async function req(url, { method = 'GET', headers = {}, body, timeout = 15000 } = {}) {
+async function req(url, { method = 'GET', headers = {}, body, timeout = 15000, api = false } = {}) {
   try {
     const res = await fetch(url, {
       method,
@@ -18,7 +18,12 @@ async function req(url, { method = 'GET', headers = {}, body, timeout = 15000 } 
       // node fetch: no global timeout; add an AbortController guard.
       signal: AbortSignal.timeout(timeout),
     });
-    return { ok: res.ok, status: res.status };
+    if (!api) return { ok: res.ok, status: res.status };
+    // The CDN manager answers a wrong path with its web page and HTTP 200. Only its JSON
+    // counts as an answer: { success, data | error }.
+    const reply = /json/.test(res.headers.get('content-type') || '') ? await res.json().catch(() => null) : null;
+    if (!reply) return { ok: false, status: res.status, error: 'the CDN API did not answer (got a web page — wrong address?)' };
+    return { ok: res.ok && reply.success !== false, status: res.status, ...(reply.error && { error: String(reply.error).slice(0, 200) }) };
   } catch (e) {
     // Surface the underlying network cause (ECONNREFUSED/ETIMEDOUT/ENOTFOUND/…)
     // rather than the generic "fetch failed".
@@ -52,6 +57,7 @@ export function cdnAdd(domain, prefix) {
     headers: { 'x-api-key': CDN_API_KEY, 'Content-Type': 'application/json' },
     body: { domain, prefix },
     timeout: 120000, // endpoint issues an SSL cert synchronously (certbot) — can take well over 15s
+    api: true,
   });
 }
 
@@ -59,5 +65,6 @@ export function cdnDelete(domain) {
   return req(`${CDN_API_BASE}/domains/${encodeURIComponent(domain)}`, {
     method: 'DELETE',
     headers: { 'x-api-key': CDN_API_KEY },
+    api: true,
   });
 }
