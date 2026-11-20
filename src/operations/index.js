@@ -16,6 +16,7 @@ import { runSecrets, runRotateKey, SECRET_KEYS } from './secrets.js';
 import { runDbBackup, runDbRestore } from './dbbackup.js';
 import { runScan } from './scan.js';
 import { runPhpUpgrade } from './phpupgrade.js';
+import { runNginxUpgrade } from './nginxupgrade.js';
 import { runDbCreds } from './dbcreds.js';
 import { runHarden, ACTIONS as HARDEN_ACTIONS } from './harden.js';
 import { validAddress } from '../lib/proxies.js';
@@ -432,6 +433,19 @@ const phpupgrade = {
 };
 
 // ============================================================
+//  nginxupgrade — apply nginx package updates, restart nginx (no params)
+// ============================================================
+const nginxupgrade = {
+  name: 'nginxupgrade',
+  validate() {
+    return { ok: true, errors: [], clean: {} };
+  },
+  async run(job, helpers) {
+    await runNginxUpgrade(job, helpers);
+  },
+};
+
+// ============================================================
 //  scan — ClamAV malware scan of a site's files (report downloadable afterwards)
 // ============================================================
 const scan = {
@@ -657,7 +671,7 @@ const migrate = {
 
 // ---------------------------------------------------------------------------
 
-export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, reboot, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, sshaccess, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade };
+export const operations = { deploy, update, delete: del, alias, cleanup, cdn, ssl, purge, migrate, selfupdate, reboot, sshcheck, tunephp, www, cron, root, dbcreds, harden, firewall, sshaccess, secrets, rotatekey, dbbackup, dbrestore, scan, phpupgrade, nginxupgrade };
 
 export function getOperation(type) {
   return operations[type] || null;

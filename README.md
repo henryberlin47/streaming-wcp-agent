@@ -275,6 +275,12 @@ restarts itself. Values are never stored in the operation record.
 
 ## Rotating the agent key
 
+`POST /api/op/nginxupgrade` upgrades every installed nginx package
+(`--only-upgrade`, config files kept) and restarts nginx so the new program is
+the one answering. It refuses to start if `nginx -t` fails beforehand, and
+fails loudly if nginx is not running afterwards. `/healthz` reports `nginx`
+(from `nginx -v`) next to `php`.
+
 `POST /api/op/sshaccess { port?, sources? }` changes the SSH port and/or limits
 which addresses may reach it (`sources: []` = anyone). The firewall is opened
 for the new settings first; sshd is moved by a drop-in and must greet a

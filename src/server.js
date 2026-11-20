@@ -15,6 +15,7 @@ import { wpUsers } from './lib/wpusers.js';
 import { listBackups, testStorage } from './operations/dbbackup.js';
 import { reportFor } from './operations/scan.js';
 import { phpVersion } from './operations/phpupgrade.js';
+import { nginxVersion } from './operations/nginxupgrade.js';
 import { SERVICE, INSTALL_DIR } from './operations/selfupdate.js';
 import { collectSecurity, addKey, removeKey } from './lib/security.js';
 import { firewallStatus } from './operations/firewall.js';
@@ -85,15 +86,18 @@ async function refreshPublicIp() {
 }
 refreshPublicIp();
 setInterval(refreshPublicIp, 6 * 3600 * 1000).unref();
-// PHP version (php -v), so the portal can show who is patched. Re-read hourly
-// and, since a phpupgrade job changes it, cheaply after every job as well.
-let PHP_VERSION = '';
-const refreshPhp = () => phpVersion().then((v) => { if (v) PHP_VERSION = v; }).catch(() => {});
+// PHP and nginx versions (php -v, nginx -v), so the portal can show who is patched.
+// Re-read hourly and after every job that can change them.
+let PHP_VERSION = '', NGINX_VERSION = '';
+const refreshPhp = () => Promise.all([
+  phpVersion().then((v) => { if (v) PHP_VERSION = v; }),
+  nginxVersion().then((v) => { if (v) NGINX_VERSION = v; }),
+]).catch(() => {});
 refreshPhp();
 setInterval(refreshPhp, 3600 * 1000).unref();
 
 app.get('/healthz', (req, res) => {
-  res.json({ ok: true, server: config.serverName, version: VERSION, public_ip: PUBLIC_IP, php: PHP_VERSION || null, time: Date.now() });
+  res.json({ ok: true, server: config.serverName, version: VERSION, public_ip: PUBLIC_IP, php: PHP_VERSION || null, nginx: NGINX_VERSION || null, time: Date.now() });
 });
 
 // Everything below requires auth + passes the IP allowlist.
@@ -247,7 +251,7 @@ app.post('/api/op/:type', (req, res) => {
   const { ok, errors, clean } = op.validate(req.body || {});
   if (!ok) return res.status(400).json({ error: 'validation_failed', errors });
 
-  const job = enqueue(type, clean, (j, helpers) => op.run(j, helpers, clean).finally(() => { if (type === 'phpupgrade') refreshPhp(); }));
+  const job = enqueue(type, clean, (j, helpers) => op.run(j, helpers, clean).finally(() => { if (['phpupgrade', 'nginxupgrade', 'harden'].includes(type)) refreshPhp(); }));
   res.status(202).json({ jobId: job.id, state: job.state, view: publicView(job) });
 });
 
