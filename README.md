@@ -340,6 +340,8 @@ It reports facts and the findings drawn from them:
   members, and an `authorized_keys` file outside any account's home.
 - **Firewall, fail2ban, listening ports** and which ports the internet can reach.
 - **Updates**: pending security updates, automatic updates, restart pending.
+- **Sessions**: who is logged in right now (`who -u`) and every open
+  connection to the SSH port, by address.
 - **Web user**: shell, password, own crontab, PHP files inside uploads folders,
   programs or scripts it owns in temp folders.
 - **Database**: library files where MySQL can write, foreign functions loaded

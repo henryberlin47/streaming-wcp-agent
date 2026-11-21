@@ -74,7 +74,8 @@ else if (a[0] === "status" && !a[1]) console.log("Status\\n|- Number of jail:\\t
 else if (a[0] === "banned") console.log("[{'sshd': ['92.118.39.77']}, {'recidive': ['179.43.144.186']}]");
 `); fs.chmodSync(path.join(bin, "fail2ban-client"), 0o755);
 stub("ufw", `echo "$*" >> "${base}/ufw"; [ "$1" = status ] && echo "Status: inactive"; exit 0`);
-stub("ss", `echo 'LISTEN 0 511 0.0.0.0:22222 0.0.0.0:* users:(("nginx",pid=1,fd=6))'`);
+stub("ss", `case "$*" in *established*) printf '0 0 203.0.113.5:22 94.207.20.128:64671\\n0 0 203.0.113.5:22 94.207.20.128:64700\\n0 0 [::ffff:203.0.113.5]:22 [::ffff:198.51.100.7]:5555\\n0 0 203.0.113.5:443 45.135.237.4:1\\n';; *) echo 'LISTEN 0 511 0.0.0.0:22222 0.0.0.0:* users:(("nginx",pid=1,fd=6))';; esac`);
+stub("who", `printf 'root     pts/0        2026-11-21 10:02   .          4242 (94.207.20.128)\\nroot     pts/1        Nov 21 09:15  01:12       4300 (198.51.100.7)\\nroot     tty1         2026-11-20 08:00  old         900\\n'`);
 Object.assign(process.env, { PATH: `${bin}:${process.env.PATH}`, AGENT_PASSWD_FILE: passwd, AGENT_SHADOW_FILE: shadow, AGENT_GROUP_FILE: group, AGENT_KEY_SEARCH_DIRS: base, AGENT_SSHD_DROPIN_DIR: dropins,
   AGENT_F2B_JAIL_DIR: path.join(base, "jail.d"), AGENT_APT_CONF_DIR: path.join(base, "apt.conf.d"), AGENT_WWW_DIR: path.join(base, "www"), AGENT_ENV_FILE: path.join(base, "agent.env"),
   AGENT_ALLOWLIST_FILE: path.join(base, "allowlist.txt"), AGENT_SSH_SOURCES_FILE: path.join(base, "ssh-sources.txt"), AGENT_TMP_DIRS: path.join(base, "tmp"), AGENT_DB_DIRS: path.join(base, "mysql"), AGENT_UPDATE_CHECK: path.join(bin, "apt-check"), AGENT_REBOOT_FLAG: path.join(base, "reboot-required"), AGENT_TOKEN: "t".repeat(64) });
@@ -269,6 +270,12 @@ fs.mkdirSync(path.join(base, "www/.ssh"), { recursive: true }); fs.writeFileSync
 fs.mkdirSync(path.join(base, "tmp/.x"), { recursive: true }); fs.writeFileSync(path.join(base, "tmp/.x/authorized_keys"), `${pub}\n`);
 // ---- 5) the audit end to end on the fake box --------------------------------------------------
 const audit = await S.collectSecurity();
+// who is on the server right now: terminals from `who` (either date style, console included), connections to the SSH port only
+assert.deepEqual(audit.sessions.users, [
+  { user: "root", tty: "pts/0", since: "2026-11-21 10:02", idle: "active", pid: 4242, from: "94.207.20.128" },
+  { user: "root", tty: "pts/1", since: "Nov 21 09:15", idle: "01:12", pid: 4300, from: "198.51.100.7" },
+  { user: "root", tty: "tty1", since: "2026-11-20 08:00", idle: "old", pid: 900, from: "" }]);
+assert.deepEqual(audit.sessions.connections, [{ ip: "94.207.20.128", count: 2 }, { ip: "198.51.100.7", count: 1 }], "web traffic on 443 is not counted; an IPv4-in-IPv6 address is shown plainly");
 assert.equal(audit.ssh.passwordauthentication, "no"); assert.equal(audit.users.find((u) => u.name === "root").keys.length, 1);
 assert.ok(audit.findings.some((f) => f.id === "nopass-deploy"), "an account with an empty password is flagged");
 assert.deepEqual(audit.users.map((u) => u.name), ["root", "www-data", "deploy"], "every account that can log in, holds a key or may sudo");

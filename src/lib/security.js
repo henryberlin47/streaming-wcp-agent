@@ -98,6 +98,29 @@ export function parseUfw(text) {
   return { active, rules };
 }
 
+/** `who -u` -> who is logged in right now: [{ user, tty, since, idle, pid, from }]. `from` is empty for the console. */
+export function parseWho(text) {
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    // NAME  LINE  TIME (two or three words, by locale)  IDLE  PID  (HOST)
+    const m = /^(\S+)\s+(\S+)\s+(.+?)\s+(\.|old|\?|\d\d:\d\d)\s+(\d+)(?:\s+\((.*)\))?\s*$/.exec(line);
+    if (m) out.push({ user: m[1], tty: m[2], since: m[3].trim(), idle: m[4] === '.' ? 'active' : m[4], pid: Number(m[5]), from: m[6] || '' });
+  }
+  return out;
+}
+
+/** `ss -Htn state established` -> the far ends of open connections to these local ports: [{ ip, count }], most first. */
+export function parseEstablished(text, ports) {
+  const n = new Map();
+  for (const line of String(text).split('\n')) {
+    const [local, peer] = line.trim().split(/\s+/).filter((c) => /:\d+$/.test(c));
+    if (!local || !peer || !ports.includes(Number(local.slice(local.lastIndexOf(':') + 1)))) continue;
+    const ip = peer.slice(0, peer.lastIndexOf(':')).replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
+    n.set(ip, (n.get(ip) || 0) + 1);
+  }
+  return [...n].map(([ip, count]) => ({ ip, count })).sort((a, b) => b.count - a.count);
+}
+
 const UFW_APPS = { OpenSSH: [22], 'Nginx Full': [80, 443], 'Nginx HTTP': [80], 'Nginx HTTPS': [443] };
 /** Is this an ALLOW rule for that TCP port — from anywhere, one address or one interface alike? */
 export function ruleAllows(r, port) {
@@ -430,12 +453,13 @@ async function envWorldReadable() {
 
 /** Every fact the audit reports, plus the findings drawn from them. */
 export async function collectSecurity() {
-  const [ssh, accts, log, ufwOut, ss, f2bActive, f2bStatus, f2bJails, f2bBanned, aptCheck, autoConf, osRelease] = await Promise.all([
+  const [ssh, accts, log, ufwOut, ss, f2bActive, f2bStatus, f2bJails, f2bBanned, aptCheck, autoConf, osRelease, who, established] = await Promise.all([
     sshdSettings(), accounts(), sshLog(),
     probe('ufw', ['status']), probe('ss', ['-tlnpH']),
     probe('systemctl', ['is-active', 'fail2ban']), probe('fail2ban-client', ['status', 'sshd']),
     probe('fail2ban-client', ['status']), probe('fail2ban-client', ['banned']),
     probe('/usr/lib/update-notifier/apt-check'), readText('/etc/apt/apt.conf.d/20auto-upgrades'), readText('/etc/os-release'),
+    probe('who', ['-u']), probe('ss', ['-Htn', 'state', 'established']),
   ]);
   // Every account is checked for keys — a key on a service account is the thing to find.
   // Reported: accounts that can log in, hold a key, have root's id, or may sudo.
@@ -459,6 +483,9 @@ export async function collectSecurity() {
     os: /^PRETTY_NAME="?([^"\n]+)"?/m.exec(osRelease)?.[1] || null,
     ssh: Object.fromEntries(['port', 'permitrootlogin', 'passwordauthentication', 'pubkeyauthentication', 'kbdinteractiveauthentication', 'maxauthtries', 'x11forwarding', 'permitemptypasswords', 'logingracetime'].map((k) => [k, ssh[k] ?? null])), sshSources: await sshSources(),
     users, accounts: accts.length, strayKeyFiles,
+    // who is on the server at this moment: logged-in terminals, and every open connection to the SSH port
+    // (a connection with no terminal is a file copy, a tunnel, a command, or someone still at the prompt)
+    sessions: { users: parseWho(who.stdout), connections: parseEstablished(established.stdout, [Number(ssh.port) || 22]) },
     logins: { accepted: log.accepted.slice(0, 200), failed: { total: log.failed.total, byIp: log.failed.byIp.slice(0, 25) } },
     firewall: { installed: ufw.installed, active: ufw.active, rules: ufw.rules.map((r) => r.raw) },
     fail2ban: {
