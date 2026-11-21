@@ -17,7 +17,7 @@ import { reportFor } from './operations/scan.js';
 import { phpVersion } from './operations/phpupgrade.js';
 import { nginxVersion } from './operations/nginxupgrade.js';
 import { SERVICE, INSTALL_DIR } from './operations/selfupdate.js';
-import { collectSecurity, addKey, removeKey } from './lib/security.js';
+import { collectSecurity, addKey, removeKey, removeAccount } from './lib/security.js';
 import { firewallStatus } from './operations/firewall.js';
 import fs from 'node:fs';
 import { readS3Params } from './lib/s3.js';
@@ -238,6 +238,13 @@ app.post('/api/security/keys/:action', async (req, res) => {
   } catch (e) {
     res.status(e?.status || 500).json({ error: 'key_failed', message: e?.message || 'failed' });
   }
+});
+
+// POST /api/security/accounts/remove { user } -> an ordinary account is deleted with its keys (home kept);
+//   a service account or a second root-id account has its keys removed and its password locked. Never root.
+app.post('/api/security/accounts/remove', async (req, res) => {
+  try { res.json({ ok: true, ...(await removeAccount(String(req.body?.user || ''))) }); }
+  catch (e) { res.status(e?.status || 500).json({ error: 'account_failed', message: e?.message || 'failed' }); }
 });
 
 // --- start an operation -----------------------------------------------------

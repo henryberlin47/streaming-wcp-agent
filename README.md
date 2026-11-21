@@ -348,6 +348,12 @@ It reports facts and the findings drawn from them:
   (`mysql.func`), accounts open to any address — the marks of a UDF attack.
 - **Agent**: bind address, allowlist, `.env` mode.
 
+`POST /api/security/accounts/remove { user }` takes an account out of use with
+every key it holds: an ordinary account (own user id, 1000+) has its sessions
+ended and is deleted, home folder kept; a service account or a second account
+with root's id has its keys removed and its password locked, and stays. Never
+root, and refused while root itself cannot log in over SSH.
+
 `POST /api/security/keys/add { key }` installs a public key for root (a bare key
 line only — no options); `POST /api/security/keys/remove { user, fingerprint }`
 removes one. Removing root's last key is refused while password login is off.

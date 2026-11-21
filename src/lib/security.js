@@ -376,6 +376,56 @@ export async function removeKey(user, fingerprint) {
   return removed;
 }
 
+/**
+ * Take an account out of use, with every key it holds. Never root.
+ *   - an ordinary account (its own user id, 1000 or above): its sessions are ended, its key
+ *     files deleted and the account deleted. The home folder is KEPT (it may be evidence).
+ *   - a service account, or a second account with root's user id: its key files are deleted
+ *     and its password locked, so nobody can log in as it — but the account stays. Deleting
+ *     a service's account breaks the service, and an account that shares root's id cannot
+ *     be told apart from root by the tools that delete accounts.
+ * Refused while root itself cannot log in over SSH: the account may be the only way in.
+ * Returns { user, action: 'deleted' | 'locked', keys, home, note? }.
+ */
+export async function removeAccount(user) {
+  const all = await accounts();
+  const acct = all.find((u) => u.name === user);
+  if (!acct) throw fail(`no such account: ${user}`, 404);
+  if (user === 'root') throw fail('root is never removed — remove its keys one at a time instead');
+  const ssh = await sshdSettings();
+  const root = all.find((u) => u.name === 'root');
+  const rootKeys = root ? (await listKeys(root.home)).length : 0;
+  const rootCanLogIn = ssh.permitrootlogin !== 'no' && (rootKeys > 0 || (ssh.permitrootlogin === 'yes' && ssh.passwordauthentication === 'yes' && root?.password === 'set'));
+  if (!rootCanLogIn) throw fail(`refused: root cannot log in over SSH on this server (root login is off, or root has no key), so ${user} may be the only way in. Add a key for root first.`);
+
+  // Its keys. A home it shares with another account (a root-id clone living in /root) holds THAT account's keys: left alone.
+  const home = path.resolve(acct.home || '/');
+  const sharedWith = all.find((u) => u.name !== user && path.resolve(u.home || '/') === home);
+  let keys = 0, note;
+  if (home === '/' || sharedWith) {
+    note = `its home (${home}) is ${sharedWith ? `also ${sharedWith.name}'s` : 'the root folder'}, so no key file was deleted there`;
+  } else {
+    keys = (await listKeys(home)).length;
+    for (const file of keysFiles(home)) await fs.rm(file, { force: true });
+  }
+
+  const ordinary = acct.uid >= 1000 && acct.uid < 65534 && !all.some((u) => u.name !== user && u.uid === acct.uid);
+  if (acct.uid !== 0) await probe('loginctl', ['terminate-user', user]); // ends its login sessions; services are not sessions
+  let action = 'locked';
+  if (ordinary) {
+    await probe('pkill', ['-KILL', '-U', String(acct.uid)]); // anything it left running (its id is its own)
+    let r = await probe('userdel', [user]);
+    if (r.code !== 0) { await new Promise((res) => setTimeout(res, 1000)); r = await probe('userdel', [user]); }
+    if (r.code !== 0) throw fail(`its ${keys} key(s) were removed, but the account could not be deleted: ${(r.stderr || r.stdout).trim().split('\n').pop() || `userdel exit ${r.code}`}`, 500);
+    action = 'deleted';
+  } else {
+    const r = await probe('usermod', ['-L', user]);
+    if (r.code !== 0) throw fail(`its ${keys} key(s) were removed, but its password could not be locked: ${(r.stderr || r.stdout).trim().split('\n').pop() || `usermod exit ${r.code}`}`, 500);
+  }
+  console.log(`[security] account ${user} ${action}: ${keys} key(s) removed${note ? ` (${note})` : ''}`);
+  return { user, action, keys, home, ...(note && { note }) };
+}
+
 // ---------- collection --------------------------------------------------------
 
 /** Did a key login for this user succeed in the SSH log? (proof that key login works) */
