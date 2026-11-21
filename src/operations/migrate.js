@@ -18,8 +18,12 @@ import { logger } from '../lib/log.js';
 //   source = domain-map.json[<domain>] -> DB_NAME/DB_USER/DB_PASSWORD + DB_HOST,
 //            reverse-looked-up in servers.json for port + ssl
 //   dest   = servers.json[<destServer>] -> host + port + ssl
-//   creds  = the SAME map entry both sides (the map user holds ALL PRIVILEGES
-//            ON *.* everywhere, so it creates the destination DB itself).
+//   creds  = source: the domain's own map entry. Destination: the same DB_USER
+//            with the DESTINATION server's own password, read off the map
+//            entries already hosted on that server (every database server has
+//            its own password since the 2026-11-17 rotation — the source's
+//            password is refused there). The map user holds ALL PRIVILEGES ON
+//            *.* everywhere, so it creates the destination DB itself.
 // Modes: all (dump+import) | dump | import (needs file) | pipe (stream).
 // newDomain registers the CLONE in domain-map.json and pushes it.
 // The interactive pickers/confirm are gone — the panel supplies everything.
@@ -35,6 +39,26 @@ export const SED_ARGS = [
   '-e', 's/utf8mb4_0900_bin/utf8mb4_bin/g',
   '-e', 's/[[:space:]]DEFINER=`[^`]*`@`[^`]*`//g',
 ];
+
+/**
+ * `user`'s password on the database server at `destHost`. Every server has its
+ * own, so it comes from the map entries that already live on that server — never
+ * from the source entry. `fallback` (DEST_DB_PASSWORD in the agent's .env) is for
+ * a server that has no entry in the map yet. -> { password, from }
+ */
+export function destPassword(map, destHost, user, fallback = '', label = destHost) {
+  const found = [...new Set(Object.values(map || {})
+    .filter((e) => e && String(e.DB_HOST || '').split(':')[0] === destHost && e.DB_USER === user && e.DB_PASSWORD)
+    .map((e) => e.DB_PASSWORD))];
+  if (found.length === 1) return { password: found[0], from: 'domain-map.json' };
+  if (found.length > 1) throw new Error(`domain-map.json has ${found.length} different '${user}' passwords for ${label} (${destHost}). Fix the map first.`);
+  if (fallback) return { password: fallback, from: 'DEST_DB_PASSWORD' };
+  throw new Error(`no domain-map.json entry on ${label} (${destHost}) uses '${user}', so its password there is unknown. `
+    + `Set DEST_DB_PASSWORD in this agent's .env (and restart the agent), or add an entry hosted on ${label} to the map.`);
+}
+
+// mysql's own words for a failure (first real line), as db-migrate-site.sh prints them. Never contains a password.
+const why = (r) => `${r.stderr || r.stdout || ''}`.split('\n').map((l) => l.trim()).filter((l) => l && !/deprecated program name/i.test(l))[0] || `mysql exited ${r.code}`;
 
 const normHost = (h) => String(h || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
 // A fast child can be gone before we get here (its output is awaited first), and
@@ -124,6 +148,8 @@ export async function runMigrate(job, helpers, p, opts = {}) {
     const DEST_SSL = d.ssl ?? 'disabled';
     if (!DEST_HOST) throw new Error(`servers.json[${destServer}].host is missing`);
     const DEST_DB = p.destDb || SRC_DB_NAME;
+    const dest = destPassword(map, DEST_HOST, SRC_DB_USER, process.env.DEST_DB_PASSWORD || '', destServer);
+    const DEST_DB_PASS = dest.password;
 
     if (SRC_HOST === DEST_HOST && String(SRC_PORT) === DEST_PORT && SRC_DB_NAME === DEST_DB) {
       throw new Error(`source and destination are the same database (${SRC_HOST}:${SRC_PORT}/${SRC_DB_NAME}) — nothing to do`);
@@ -152,14 +178,14 @@ export async function runMigrate(job, helpers, p, opts = {}) {
     const srcDefaults = await writeDefaults(path.join(secretsDir, 'src.cnf'),
       { host: SRC_HOST, port: SRC_PORT, user: SRC_DB_USER, password: SRC_DB_PASS, ssl: SRC_SSL }, mariadbClient);
     const dstDefaults = await writeDefaults(path.join(secretsDir, 'dst.cnf'),
-      { host: DEST_HOST, port: DEST_PORT, user: SRC_DB_USER, password: SRC_DB_PASS, ssl: DEST_SSL }, mariadbClient);
+      { host: DEST_HOST, port: DEST_PORT, user: SRC_DB_USER, password: DEST_DB_PASS, ssl: DEST_SSL }, mariadbClient);
 
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '_');
     const DUMP_FILE = `${DUMP_DIR}/${SRC_DB_NAME}_${stamp}.sql.gz`;
 
     info(`Source : ${SRC_DB_NAME} @ ${SRC_SERVER} (${SRC_HOST}:${SRC_PORT}, ssl=${SRC_SSL})`);
     info(`Dest   : ${DEST_DB} @ ${destServer} (${DEST_HOST}:${DEST_PORT}, ssl=${DEST_SSL})`);
-    info(`User   : ${SRC_DB_USER} (from domain-map.json, both sides)   Mode: ${mode}`);
+    info(`User   : ${SRC_DB_USER} (each server's own password; ${destServer}'s from ${dest.from})   Mode: ${mode}`);
     if (SRC_SERVER === '(unlisted)') {
       warn('Source host is not in servers.json — assuming ssl=required. Add it for an accurate port/SSL.');
     }
@@ -173,7 +199,7 @@ export async function runMigrate(job, helpers, p, opts = {}) {
     const testSource = async () => {
       const r = await q(srcDefaults, 'SELECT 1', SRC_DB_NAME);
       if (r.code !== 0) {
-        throw new Error(`cannot connect to source ${SRC_DB_NAME} @ ${SRC_SERVER} (${SRC_HOST}:${SRC_PORT}) — IP whitelisted? ${r.stderr.trim()}`);
+        throw new Error(`cannot connect to source ${SRC_DB_NAME} @ ${SRC_SERVER} (${SRC_HOST}:${SRC_PORT}): ${why(r)}`);
       }
       SRC_VER = (await q(srcDefaults, 'SELECT VERSION();', SRC_DB_NAME)).stdout.trim();
       ok(`Source ready: ${SRC_DB_NAME} @ ${SRC_SERVER} (MySQL ${SRC_VER})`);
@@ -187,20 +213,21 @@ export async function runMigrate(job, helpers, p, opts = {}) {
         ok(`Destination ready: ${DEST_DB} @ ${destServer} (MySQL ${DST_VER})`);
         return;
       }
-      if ((await q(dstDefaults, 'SELECT 1')).code !== 0) {
-        throw new Error(`'${SRC_DB_USER}' cannot authenticate on ${destServer} (${DEST_HOST}:${DEST_PORT})`);
+      const login = await q(dstDefaults, 'SELECT 1');
+      if (login.code !== 0) {
+        throw new Error(`'${SRC_DB_USER}' cannot log in on ${destServer} (${DEST_HOST}:${DEST_PORT}) with the password from ${dest.from}: ${why(login)}`);
       }
       info(`Creating '${DEST_DB}' on ${destServer} as '${SRC_DB_USER}'`);
       let r = await run(helpers, 'mysql',
         [`--defaults-file=${dstDefaults}`, '-e', `CREATE DATABASE IF NOT EXISTS \`${DEST_DB}\` DEFAULT CHARACTER SET utf8mb4`], { quiet: true });
       if (r.code !== 0) {
-        throw new Error(`'${SRC_DB_USER}' cannot CREATE DATABASE '${DEST_DB}' on ${destServer} — check SHOW GRANTS FOR CURRENT_USER()`);
+        throw new Error(`'${SRC_DB_USER}' cannot CREATE DATABASE '${DEST_DB}' on ${destServer}: ${why(r)}`);
       }
       // CREATE alone does not imply write access — prove it before streaming into it.
       r = await run(helpers, 'mysql',
         [`--defaults-file=${dstDefaults}`, '-e', 'CREATE TABLE `_ba_migrate_probe` (i int); DROP TABLE `_ba_migrate_probe`;', DEST_DB], { quiet: true });
       if (r.code !== 0) {
-        throw new Error(`'${SRC_DB_USER}' created '${DEST_DB}' but cannot write to it on ${destServer}`);
+        throw new Error(`'${SRC_DB_USER}' created '${DEST_DB}' but cannot write to it on ${destServer}: ${why(r)}`);
       }
       DST_VER = (await q(dstDefaults, 'SELECT VERSION();', DEST_DB)).stdout.trim();
       ok(`Destination ready: created ${DEST_DB} @ ${destServer} (MySQL ${DST_VER})`);
@@ -326,7 +353,7 @@ export async function runMigrate(job, helpers, p, opts = {}) {
         DB_HOST: `${DEST_HOST}:${DEST_PORT}`,
         DB_NAME: DEST_DB,
         DB_USER: SRC_DB_USER,
-        DB_PASSWORD: SRC_DB_PASS,
+        DB_PASSWORD: DEST_DB_PASS, // the server the clone lives on, not the one it was copied from
         CDN_PREFIX,
       };
       const gitEmail = `db-migrate-site@${os.hostname() || 'localhost'}`;
@@ -428,9 +455,10 @@ export async function runMigrate(job, helpers, p, opts = {}) {
       if (DEST_DB === SRC_DB_NAME) {
         // Same database name: the domain was MOVED to another server.
         info(`NEXT STEPS — moved ${SRC_DB_NAME} to ${destServer}. Repoint ${domain}:`);
-        info(`  1. In domain-map.json set DB_HOST=${DEST_HOST}:${DEST_PORT} for ${domain}, commit + push.`);
-        info('  2. Update DB_HOST in /var/www/<domain>/htdocs/src/.env on every site using it.');
-        info('  3. systemctl restart php8.3-fpm (clears OPcache), then verify the site loads.');
+        info(`  1. In domain-map.json set DB_HOST=${DEST_HOST}:${DEST_PORT} for ${domain}, and DB_PASSWORD to ${destServer}'s password`);
+        info(`     (copy it from another ${destServer} entry). Commit + push.`);
+        info('  2. On every site using it: Sites → ⋯ → Re-pull DB credentials (tests the new host + password, then updates the .env and clears caches).');
+        info('  3. Verify the site loads.');
         info(`  4. Once verified, drop the old ${SRC_DB_NAME} on ${SRC_SERVER}.`);
       } else {
         // New database name: the source was CLONED as a base for another site.
@@ -440,7 +468,7 @@ export async function runMigrate(job, helpers, p, opts = {}) {
           info(`  2. Deploy the site with root=${NEW_DOMAIN}.`);
           info(`  3. Rewrite the cloned URLs: cleanup ${NEW_DOMAIN} <- ${domain}.`);
         } else {
-          info(`  1. Add a domain-map.json entry for the new root: DB_HOST=${DEST_HOST}:${DEST_PORT} DB_NAME=${DEST_DB} DB_USER=${SRC_DB_USER} (same password + CDN_PREFIX).`);
+          info(`  1. Add a domain-map.json entry for the new root: DB_HOST=${DEST_HOST}:${DEST_PORT} DB_NAME=${DEST_DB} DB_USER=${SRC_DB_USER} (DB_PASSWORD = ${destServer}'s password, as on its other entries, plus CDN_PREFIX).`);
           info('  2. Deploy the site with that root.');
           info(`  3. Rewrite the cloned URLs from ${domain}.`);
         }

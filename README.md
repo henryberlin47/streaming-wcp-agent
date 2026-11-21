@@ -310,6 +310,25 @@ caller IP; never a body or a header. Successful GETs are not logged. The portal
 shows it under Servers → ⋯ → **View agent log**. Job output is not in the
 journal; the portal keeps that per operation.
 
+## Database migration: whose password
+
+Every database server has its own password. `migrate` therefore uses two:
+
+- **source** — the domain's own `domain-map.json` entry (host, name, user, password);
+- **destination** — the same `DB_USER`, with the password of the *destination*
+  server, read off the map entries already hosted on that server. Two different
+  passwords for that user on one server is refused ("Fix the map first").
+
+A destination with no entry in the map yet has no known password: set
+`DEST_DB_PASSWORD` in this agent's `.env` (restart the agent) for that one run. It
+is only a fallback — a server the map knows is never overridden by it.
+
+A clone registered with `newDomain` is written to the map with the destination
+server's password. After a **move**, set `DB_HOST` *and* `DB_PASSWORD` for the
+domain in the map, then use **Re-pull DB credentials** on its sites. A failed login
+reports mysql's own error and where the password came from, never the password.
+(`test-migrate-creds.mjs`)
+
 ## Re-pulling DB credentials
 
 `POST /api/op/dbcreds` `{ domain }` reads the `seo-domain-map` entry of the
